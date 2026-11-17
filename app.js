@@ -1,0 +1,979 @@
+const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+const appMain = document.getElementById("appMain");
+const breadcrumb = document.getElementById("breadcrumbCurrent");
+const modalBackdrop = document.getElementById("modalBackdrop");
+const modalContent = document.getElementById("modalContent");
+const toastRegion = document.getElementById("toastRegion");
+const sidebar = document.getElementById("sidebar");
+const publicSite = document.getElementById("publicSite");
+const authGate = document.getElementById("authGate");
+const productApp = document.getElementById("productApp");
+const storageKey = "rankforge-ai-demo";
+const legacyStorageKey = "forgeflow-demo";
+
+const state = {
+  user: null,
+  activeWorkspaceId: "northstar",
+  workspaces: [
+    { id: "northstar", name: "Northstar Manufacturing", industry: "Food & Beverage", plan: "Starter", role: "Owner", website: "northstarindustrial.com" },
+    { id: "forge-partners", name: "Forge Partners Studio", industry: "Agency", plan: "Agency", role: "Admin", website: "forgepartners.example" },
+    { id: "client-northstar", name: "Northstar Manufacturing", industry: "Food & Beverage", plan: "Agency", role: "Admin", website: "", teamType: "Client" },
+    { id: "client-apex-steel", name: "Apex Steel Systems", industry: "Steel", plan: "Agency", role: "Admin", website: "", teamType: "Client" },
+    { id: "client-meridian-fleet", name: "Meridian Fleet Tech", industry: "Automotive", plan: "Agency", role: "Admin", website: "", teamType: "Client" }
+  ],
+  members: [
+    { name: "Alex Morgan", email: "alex@northstarindustrial.com", role: "Owner", status: "Active" },
+    { name: "Priya Shah", email: "priya@northstarindustrial.com", role: "Editor", status: "Active" },
+    { name: "Jordan Lee", email: "jordan@northstarindustrial.com", role: "Reviewer", status: "Invited" }
+  ],
+  clients: [
+    { id: "client-northstar", name: "Northstar Manufacturing", vertical: "Food & Beverage", pages: 12, status: "Active" },
+    { id: "client-apex-steel", name: "Apex Steel Systems", vertical: "Steel", pages: 8, status: "Active" },
+    { id: "client-meridian-fleet", name: "Meridian Fleet Tech", vertical: "Automotive", pages: 4, status: "Onboarding" }
+  ],
+  userDirectory: [],
+  view: "dashboard",
+  topicFilter: "All topics",
+  selectedVertical: "Food & Beverage",
+  reviewTab: "Draft",
+  qaPatched: false,
+  approved: false,
+  activeEditorTab: "Content",
+  search: "",
+  topics: [
+    { title: "Predictive maintenance for centrifugal pumps", vertical: "Food & Beverage", equipment: "Centrifugal pumps", pain: "Unplanned downtime", type: "Solution page", status: "Suggested" },
+    { title: "Reduce conveyor line downtime with PdM", vertical: "Food & Beverage", equipment: "Conveyors", pain: "Unplanned downtime", type: "Solution page", status: "Suggested" },
+    { title: "CIP process downtime monitoring", vertical: "Food & Beverage", equipment: "CIP systems", pain: "Cleaning delays", type: "Use case", status: "Approved" },
+    { title: "EAF energy optimization software", vertical: "Steel", equipment: "Electric arc furnace", pain: "Energy costs", type: "Solution page", status: "In review" },
+    { title: "Weld inspection defect detection", vertical: "Automotive", equipment: "Weld cells", pain: "Quality defects", type: "Industry page", status: "Suggested" },
+    { title: "Kiln efficiency monitoring", vertical: "Cement", equipment: "Rotary kiln", pain: "Fuel consumption", type: "Use case", status: "Suggested" },
+    { title: "Yarn breakage analytics for textile mills", vertical: "Textile", equipment: "Spinning frames", pain: "Yarn breakage", type: "Solution page", status: "Suggested" },
+    { title: "RTU fault detection for smart buildings", vertical: "HVAC", equipment: "Rooftop units", pain: "Fault detection", type: "Industry page", status: "Approved" },
+    { title: "Connect PLC and MES data with OPC UA", vertical: "SCADA & Automation", equipment: "PLC / MES", pain: "Data integration", type: "Guide", status: "Suggested" }
+  ],
+  batches: [
+    { name: "Food & Beverage · PdM", detail: "Created today · 12 topics", initials: "FB", className: "", progress: 75, status: "In review", date: "Today" },
+    { name: "Steel · Energy efficiency", detail: "Created yesterday · 8 topics", initials: "ST", className: "orange", progress: 45, status: "Generating", date: "Yesterday" },
+    { name: "Automotive · Quality", detail: "Created May 18 · 10 topics", initials: "AU", className: "blue", progress: 100, status: "Ready", date: "May 18" }
+  ],
+  pages: [
+    { title: "Predictive maintenance for centrifugal pumps", batch: "Food & Beverage · PdM", date: "May 21, 2025", status: "Approved", schema: "Article · FAQPage" },
+    { title: "EAF energy optimization software", batch: "Steel · Energy efficiency", date: "May 20, 2025", status: "Approved", schema: "Article · FAQPage" },
+    { title: "Weld inspection defect detection", batch: "Automotive · Quality", date: "May 19, 2025", status: "Exported", schema: "Article · HowTo" },
+    { title: "CIP process downtime monitoring", batch: "Food & Beverage · PdM", date: "May 17, 2025", status: "Exported", schema: "Article · FAQPage" }
+  ],
+  verticals: [
+    { name: "Automotive", icon: "🚘", count: "Explore topics", desc: "Stamping, paint & weld defects, warranty analytics, IATF and APQP." },
+    { name: "Steel", icon: "🏭", count: "Explore topics", desc: "EAF energy, continuous casting quality and predictive maintenance." },
+    { name: "Food & Beverage", icon: "🥫", count: "Explore topics", desc: "Pumps, conveyors, fillers, CIP downtime and OEE." },
+    { name: "HVAC", icon: "🌬️", count: "Explore topics", desc: "FDD, RTU failure prediction and smart building AI." },
+    { name: "Textile", icon: "🧵", count: "Explore topics", desc: "Yarn breakage, fabric waste and cutting room KPIs." },
+    { name: "Cement", icon: "🧱", count: "Explore topics", desc: "Kiln efficiency and downtime tracking." },
+    { name: "SCADA & Automation", icon: "⚙️", count: "Explore topics", desc: "PLC / MES / ERP integration, OPC UA and UNS." }
+  ]
+};
+
+const demoSeed = JSON.parse(JSON.stringify({
+  workspaces: state.workspaces,
+  members: state.members,
+  clients: state.clients,
+  topics: state.topics,
+  batches: state.batches,
+  pages: state.pages
+}));
+state.workspaceData = {
+  northstar: { topics: state.topics, batches: state.batches, pages: state.pages, members: state.members, clients: state.clients },
+  "forge-partners": {
+    topics: [],
+    batches: [],
+    pages: [],
+    members: [{ name: "Alex Morgan", email: "alex@northstarindustrial.com", role: "Admin", status: "Active" }],
+    clients: [
+      { id: "client-apex-steel", name: "Apex Steel Systems", vertical: "Steel", pages: 8, status: "Active" },
+      { id: "client-meridian-fleet", name: "Meridian Fleet Tech", vertical: "Automotive", pages: 4, status: "Onboarding" }
+    ]
+  },
+  "client-apex-steel": { topics: [], batches: [], pages: [], members: [], clients: [] },
+  "client-northstar": { topics: [], batches: [], pages: [], members: [], clients: [] },
+  "client-meridian-fleet": { topics: [], batches: [], pages: [], members: [], clients: [] }
+};
+demoSeed.workspaceData = JSON.parse(JSON.stringify(state.workspaceData));
+
+function currentWorkspace() {
+  return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId) || state.workspaces[0];
+}
+
+function persistState() {
+  try {
+    saveCurrentWorkspaceData();
+    localStorage.setItem(storageKey, JSON.stringify({
+      user: state.user,
+      activeWorkspaceId: state.activeWorkspaceId,
+      workspaces: state.workspaces,
+      members: state.members,
+      clients: state.clients,
+      workspaceData: state.workspaceData,
+      userDirectory: state.userDirectory,
+      topics: state.topics,
+      batches: state.batches,
+      pages: state.pages
+    }));
+  } catch (error) {
+    showToast("Could not save this prototype session in browser storage.");
+  }
+}
+
+function saveCurrentWorkspaceData() {
+  if (!state.activeWorkspaceId) return;
+  state.workspaceData = state.workspaceData || {};
+  state.workspaceData[state.activeWorkspaceId] = {
+    topics: state.topics,
+    batches: state.batches,
+    pages: state.pages,
+    members: state.members,
+    clients: state.clients
+  };
+}
+
+function loadWorkspaceData(workspaceId) {
+  const data = state.workspaceData && state.workspaceData[workspaceId];
+  if (!data) {
+    state.topics = [];
+    state.batches = [];
+    state.pages = [];
+    state.members = [{ name: state.user ? state.user.name : "Workspace owner", email: state.user ? state.user.email : "", role: "Owner", status: "Active" }];
+    state.clients = [];
+    return;
+  }
+  state.topics = data.topics;
+  state.batches = data.batches;
+  state.pages = data.pages;
+  state.members = data.members;
+  state.clients = data.clients;
+}
+
+function restoreState() {
+  try {
+    const saved = localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey);
+    if (!saved) return false;
+    const data = JSON.parse(saved);
+    if (!data || !Array.isArray(data.workspaces) || !data.workspaces.length) return false;
+    Object.assign(state, data);
+    if (!localStorage.getItem(storageKey)) {
+      localStorage.setItem(storageKey, saved);
+      localStorage.removeItem(legacyStorageKey);
+    }
+    return Boolean(state.user);
+  } catch (error) {
+    showToast("Saved browser data could not be read. Start a fresh preview or account.");
+    return false;
+  }
+}
+
+function showPublic() {
+  productApp.hidden = true;
+  authGate.hidden = true;
+  publicSite.hidden = false;
+  publicSite.innerHTML = renderPublicSite();
+  publicSite.querySelectorAll("[data-public-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (button.dataset.publicAction === "signup") showAuth("signup");
+      if (button.dataset.publicAction === "login") showAuth("login");
+      if (button.dataset.publicAction === "demo") startDemo();
+      if (button.dataset.publicAction === "pricing") document.getElementById("pricingSection").scrollIntoView({ behavior: "smooth" });
+      if (button.dataset.publicAction === "mobile-menu") publicSite.classList.toggle("mobile-nav-open");
+    });
+  });
+  publicSite.querySelectorAll("[data-scroll]").forEach((link) => link.addEventListener("click", (event) => {
+    event.preventDefault();
+    const target = document.querySelector(link.dataset.scroll);
+    if (target) target.scrollIntoView({ behavior: "smooth" });
+  }));
+}
+
+function renderPublicSite() {
+  return `
+    <header class="marketing-header"><a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a>
+      <nav class="marketing-nav"><a href="#platform" data-scroll="#platform">Platform</a><a href="#industries" data-scroll="#industries">Industries</a><a href="#workflow" data-scroll="#workflow">How it works</a><a href="#pricingSection" data-scroll="#pricingSection">Pricing</a></nav>
+      <div class="marketing-actions"><button class="marketing-login" data-public-action="login">Log in</button><button class="button primary" data-public-action="signup">Get started ${icon("arrow")}</button><button class="marketing-mobile-menu icon-button" data-public-action="mobile-menu" aria-label="Open navigation">${icon("menu")}</button></div>
+    </header>
+    <main class="marketing-main">
+      <section class="marketing-hero">
+        <div class="hero-copy"><span class="hero-kicker"><i></i> THE CONTENT WORKFLOW FOR INDUSTRIAL TEAMS</span>
+          <h1>Technical content,<br/><span>without the production drag.</span></h1>
+          <p>Plan industry-specific topics, prepare structured drafts, and give your team a clear review workflow — all in one workspace.</p>
+          <div class="hero-actions"><button class="button primary hero-button" data-public-action="signup">Create your workspace ${icon("arrow")}</button><button class="button hero-secondary" data-public-action="demo">${icon("grid")} Explore the demo</button></div>
+          <div class="hero-note">${icon("check")} Start with a workspace. Invite your team when you're ready.</div>
+        </div>
+        <div class="hero-product" aria-label="RankForge AI workspace preview">
+          <div class="product-window">
+            <div class="window-bar"><span class="window-dots"><i></i><i></i><i></i></span><span>RankForge AI / workspace</span><span class="window-status">● All systems ready</span></div>
+            <div class="window-body"><aside class="mini-sidebar"><div class="mini-logo"><img src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></div><div class="mini-org"><i>N</i><span>Northstar workspace</span><b>⌄</b></div><div class="mini-nav active">▦ &nbsp; Overview</div><div class="mini-nav">◇ &nbsp; Topics &amp; batches</div><div class="mini-nav">▤ &nbsp; Content review <b>8</b></div><div class="mini-nav">◎ &nbsp; Client workspaces</div><div class="mini-nav">⚙ &nbsp; Team &amp; access</div></aside>
+              <div class="mini-main"><div class="mini-top"><span>Good morning, Alex</span><i>AM</i></div><div class="mini-stats"><div><small>Active batches</small><strong>03</strong><span>Across 3 verticals</span></div><div><small>Awaiting review</small><strong>08</strong><span>4 ready to approve</span></div><div><small>Pages this month</small><strong>12<span>/20</span></strong><span>Starter workspace</span></div></div>
+                <div class="mini-panel"><div class="mini-panel-title"><b>Production overview</b><span>View batches →</span></div><div class="mini-row"><i class="mini-row-icon">F</i><span><b>Food &amp; Beverage · PdM</b><small>12 topics · Created today</small></span><em>In review</em><div class="mini-progress"><i style="width:75%"></i></div></div><div class="mini-row"><i class="mini-row-icon orange">S</i><span><b>Steel · Energy efficiency</b><small>8 topics · Created yesterday</small></span><em class="gray">Generating</em><div class="mini-progress"><i style="width:45%"></i></div></div><div class="mini-row"><i class="mini-row-icon blue">A</i><span><b>Automotive · Quality</b><small>10 topics · Created May 18</small></span><em>Ready</em><div class="mini-progress"><i style="width:100%"></i></div></div></div>
+              </div>
+            </div>
+          </div>
+          <div class="hero-floating-card"><span class="floating-check">${icon("check")}</span><span><b>Review with confidence</b><small>Clear QA status on every draft</small></span><span class="floating-pills"><i></i><i></i><i></i></span></div>
+        </div>
+        <div class="hero-orb orb-one"></div><div class="hero-orb orb-two"></div>
+      </section>
+      <section class="proof-strip"><span>BUILT FOR COMPLEX CONTENT OPERATIONS</span><div><i>01</i> Seeded industrial taxonomy</div><div><i>02</i> Structured QA workflow</div><div><i>03</i> Team review &amp; approvals</div><div><i>04</i> Workspace-level organization</div></section>
+      <section class="marketing-section" id="platform"><div class="section-intro"><span class="hero-kicker">ONE SHARED WORKFLOW</span><h2>From industry insight<br/>to review-ready content.</h2><p>Bring your strategists, writers, and reviewers into one repeatable process — with your technical context and quality checks close at hand.</p></div>
+        <div class="feature-grid"><article class="feature-card feature-emphasis"><span class="feature-icon">${icon("layers")}</span><span class="feature-number">01 / PLAN</span><h3>Start with the industrial map</h3><p>Browse seeded topic ideas by vertical, equipment, and pain point. Curate the next batch around your product.</p><span class="feature-tag">7 INDUSTRIAL VERTICALS</span></article>
+        <article class="feature-card"><span class="feature-icon">${icon("spark")}</span><span class="feature-number">02 / PREPARE</span><h3>Keep drafts on-structure</h3><p>Apply your page rules, approved links, CTA guidance, and schema requirements before a reviewer sees the draft.</p><span class="feature-tag">STRUCTURE CHECKS</span></article>
+        <article class="feature-card"><span class="feature-icon">${icon("check")}</span><span class="feature-number">03 / REVIEW</span><h3>Make decisions as a team</h3><p>Give reviewers a live preview, visible checklist, version context, and a clear approval or change-request path.</p><span class="feature-tag">HUMAN APPROVAL</span></article></div>
+      </section>
+      <section class="workflow-section" id="workflow"><div class="workflow-copy"><span class="hero-kicker">BUILT AROUND YOUR TEAM</span><h2>Clear handoffs.<br/><span>Fewer loose ends.</span></h2><p>Keep work moving across shared batches and reviewer queues. Invite colleagues with the access they need, and separate client projects into their own workspaces.</p><button class="text-button" data-public-action="signup">Build your team workspace ${icon("arrow")}</button></div>
+        <div class="workflow-board"><div class="board-header"><div><span class="board-eyebrow">FOOD &amp; BEVERAGE · PDM</span><h3>Batch review workflow</h3></div><span class="board-avatar-stack"><i>AM</i><i>PS</i><i>JL</i><b>+2</b></span></div><div class="board-steps"><div class="board-step done"><span>${icon("check")}</span><div><b>Topic batch approved</b><small>12 topics · Alex Morgan · 9:42 AM</small></div><em>Done</em></div><div class="board-step done"><span>${icon("check")}</span><div><b>Drafts generated &amp; checked</b><small>Rule checks complete · 11:08 AM</small></div><em>Done</em></div><div class="board-step current"><span>3</span><div><b>Technical review</b><small>4 pages ready · Priya Shah</small></div><em>In progress</em></div><div class="board-step"><span>4</span><div><b>Final approval &amp; export</b><small>Owner approval required</small></div><em>Up next</em></div></div><div class="board-footer"><span>${icon("clock")} Activity is visible to workspace members</span><span>Open review →</span></div></div>
+      </section>
+      <section class="industry-section" id="industries"><div class="section-intro centered"><span class="hero-kicker">INDUSTRIAL CONTEXT, BUILT IN</span><h2>A starting point for specialized teams.</h2><p>Explore a curated taxonomy across manufacturing and industrial technology workflows.</p></div><div class="industry-chips">${state.verticals.map((vertical) => `<span><i>${vertical.icon}</i>${escapeHtml(vertical.name)}</span>`).join("")}</div></section>
+      <section class="pricing-section" id="pricingSection"><div class="section-intro centered"><span class="hero-kicker">A CLEAR STARTING POINT</span><h2>Plans that grow with your workflow.</h2><p>Indicative launch pricing from the project brief. Confirm final limits and terms before accepting payment.</p></div><div class="pricing-grid"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><p>Build and review your first industrial content batches.</p><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Up to 20 pages per month</li><li>${icon("check")} 1 domain</li><li>${icon("check")} Industrial topic library</li><li>${icon("check")} Review &amp; HTML export</li></ul><button class="button" data-public-action="signup">Create a workspace ${icon("arrow")}</button></article><article class="pricing-card featured"><span class="pricing-popular">GROWING TEAMS</span><span class="pricing-name">GROWTH</span><h3>For a scaling content operation</h3><p>Coordinate a higher volume of pages across more sites.</p><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Up to 100 pages per month</li><li>${icon("check")} Up to 3 domains</li><li>${icon("check")} Shared team review</li><li>${icon("check")} Analytics planned for V1</li></ul><button class="button primary" data-public-action="signup">Get started ${icon("arrow")}</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client teams</h3><p>Keep client projects organized with a setup designed for agencies.</p><div class="price custom-price">Let's talk</div><ul><li>${icon("check")} Multi-client workspaces</li><li>${icon("check")} Role-based client access</li><li>${icon("check")} White-label planned for V1</li><li>${icon("check")} Tailored page volume</li></ul><button class="button" data-public-action="signup">Talk to our team ${icon("arrow")}</button></article></div><p class="pricing-note">Indicative pricing is a starting point, not an active subscription offer. Billing is not connected in this prototype.</p></section>
+      <section class="final-cta"><div><span class="hero-kicker">READY TO GET ORGANIZED?</span><h2>Give your industrial content<br/>a better production system.</h2><p>Create a workspace, set your context, and invite the people who move pages forward.</p></div><button class="button primary hero-button" data-public-action="signup">Create your workspace ${icon("arrow")}</button></section>
+    </main>
+    <footer class="marketing-footer"><a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a><span>Industrial content, engineered.</span><span>Prototype experience · No live billing or authentication</span></footer>`;
+}
+
+function showAuth(mode = "signup") {
+  publicSite.hidden = true;
+  productApp.hidden = true;
+  authGate.hidden = false;
+  authGate.innerHTML = renderAuth(mode);
+  authGate.querySelectorAll("[data-auth-mode]").forEach((button) => button.addEventListener("click", () => showAuth(button.dataset.authMode)));
+  authGate.querySelectorAll("[data-auth-action]").forEach((button) => button.addEventListener("click", () => handleAuth(button.dataset.authAction)));
+  authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
+}
+
+function renderAuth(mode) {
+  const isSignup = mode === "signup";
+  return `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-intro"><span class="hero-kicker">YOUR INDUSTRIAL CONTENT WORKSPACE</span><h1>${isSignup ? "Start with a workspace." : "Welcome back."}</h1><p>${isSignup ? "Set up your organization and invite your team when you're ready. Your workspace is scoped to your projects." : "Sign in to pick up where your team left off."}</p><div class="auth-benefit">${icon("check")} Your team, roles, and projects in one place</div><div class="auth-benefit">${icon("check")} Separate client workspaces for agency teams</div><div class="auth-benefit">${icon("check")} Clear review and approval handoffs</div><div class="auth-note">This interactive prototype stores account data in this browser only. It does not provide production authentication or server-side data isolation.</div></section><section class="auth-card"><div class="auth-toggle"><button class="${isSignup ? "active" : ""}" data-auth-mode="signup">Create account</button><button class="${!isSignup ? "active" : ""}" data-auth-mode="login">Log in</button></div><h2>${isSignup ? "Create your team workspace" : "Log in to your workspace"}</h2><p>${isSignup ? "Start with your details. You can invite teammates next." : "Use the email address saved in this browser prototype."}</p><div class="auth-error" id="authError" hidden></div>${isSignup ? `<div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" placeholder="e.g. Alex Morgan" required /></div>` : ""}<div class="settings-field"><label for="authEmail">Work email</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@company.com" required /></div>${isSignup ? `<div class="settings-field"><label for="authCompany">Company / workspace name</label><input id="authCompany" autocomplete="organization" placeholder="e.g. Northstar Manufacturing" required /></div><div class="auth-fields-row"><div class="settings-field"><label for="authIndustry">Industry</label><select id="authIndustry">${state.verticals.map((v) => `<option>${escapeHtml(v.name)}</option>`).join("")}<option>Other industrial / technical</option></select></div><div class="settings-field"><label for="authTeamType">Team type</label><select id="authTeamType"><option>Industrial SaaS team</option><option>In-house marketing</option><option>Agency</option></select></div></div><label class="auth-consent"><input type="checkbox" id="authConsent" checked /> I agree to the prototype experience and understand data stays in this browser.</label>` : ""}<button class="button primary auth-submit" data-auth-action="${isSignup ? "signup" : "login"}">${isSignup ? "Create workspace" : "Continue"} ${icon("arrow")}</button><div class="auth-divider"><span>OR</span></div><button class="button auth-demo" data-auth-action="demo">${icon("grid")} Explore a sample workspace</button><small class="auth-disclaimer">No email is sent. No payment is collected. Authentication and billing must be connected before launch.</small></section></div></div>`;
+}
+
+function handleAuth(action) {
+  if (action === "demo") return startDemo();
+  const error = document.getElementById("authError");
+  if (action === "signup") {
+    const name = document.getElementById("authName").value.trim();
+    const email = document.getElementById("authEmail").value.trim().toLowerCase();
+    const company = document.getElementById("authCompany").value.trim();
+    const industry = document.getElementById("authIndustry").value;
+    const teamType = document.getElementById("authTeamType").value;
+    if (!name || !email || !company || !email.includes("@")) {
+      error.textContent = "Enter your name, a valid work email, and a workspace name.";
+      error.hidden = false;
+      return;
+    }
+    if (!document.getElementById("authConsent").checked) {
+      error.textContent = "Please confirm you understand this is a local prototype before continuing.";
+      error.hidden = false;
+      return;
+    }
+    if (state.userDirectory.some((user) => user.email === email)) {
+      error.textContent = "An account with this email already exists in this browser. Choose Log in.";
+      error.hidden = false;
+      return;
+    }
+    state.user = { name, email };
+    state.activeWorkspaceId = `workspace-${Date.now()}`;
+    state.workspaces = [{ id: state.activeWorkspaceId, name: company, industry, plan: "Starter", role: "Owner", website: "", teamType }];
+    state.members = [{ name, email, role: "Owner", status: "Active" }];
+    state.clients = teamType === "Agency" ? [] : [];
+    state.userDirectory.push({ name, email, workspaceId: state.activeWorkspaceId });
+    state.topics = [];
+    state.batches = [];
+    state.pages = [];
+    state.selectedVertical = state.verticals.some((vertical) => vertical.name === industry) ? industry : "Food & Beverage";
+    state.topicFilter = "All topics";
+    state.search = "";
+    state.qaPatched = false;
+    state.approved = false;
+    state.workspaceData = {};
+    saveCurrentWorkspaceData();
+    persistState();
+    showProduct();
+    showToast("Workspace created in this browser. Connect a backend before using real customer data.");
+    setView("team");
+    return;
+  }
+  if (action === "login") {
+    const email = document.getElementById("authEmail").value.trim().toLowerCase();
+    const user = state.userDirectory.find((item) => item.email === email);
+    if (!user) {
+      error.textContent = "No local prototype account found for that email. Create an account or explore the demo.";
+      error.hidden = false;
+      return;
+    }
+    state.user = { name: user.name, email: user.email };
+    state.activeWorkspaceId = user.workspaceId;
+    loadWorkspaceData(state.activeWorkspaceId);
+    persistState();
+    showProduct();
+    return;
+  }
+}
+
+function startDemo() {
+  const demoWorkspaceIds = demoSeed.workspaces.map((workspace) => workspace.id);
+  const otherWorkspaces = state.workspaces.filter((workspace) => !demoWorkspaceIds.includes(workspace.id));
+  const existingWorkspaceData = state.workspaceData || {};
+  state.workspaces = JSON.parse(JSON.stringify(demoSeed.workspaces));
+  state.workspaces.push(...otherWorkspaces);
+  state.members = JSON.parse(JSON.stringify(demoSeed.members));
+  state.clients = JSON.parse(JSON.stringify(demoSeed.clients));
+  state.topics = JSON.parse(JSON.stringify(demoSeed.topics));
+  state.batches = JSON.parse(JSON.stringify(demoSeed.batches));
+  state.pages = JSON.parse(JSON.stringify(demoSeed.pages));
+  state.selectedVertical = "Food & Beverage";
+  state.topicFilter = "All topics";
+  state.search = "";
+  state.qaPatched = false;
+  state.approved = false;
+  state.reviewTab = "Draft";
+  state.activeEditorTab = "Content";
+  state.workspaceData = {
+    ...existingWorkspaceData,
+    ...JSON.parse(JSON.stringify(demoSeed.workspaceData)),
+    northstar: { topics: state.topics, batches: state.batches, pages: state.pages, members: state.members, clients: state.clients },
+    "forge-partners": JSON.parse(JSON.stringify(demoSeed.workspaceData["forge-partners"]))
+  };
+  state.view = "dashboard";
+  state.user = { name: "Alex Morgan", email: "alex@northstarindustrial.com", demo: true };
+  state.activeWorkspaceId = "northstar";
+  if (!state.userDirectory.some((user) => user.email === state.user.email)) {
+    state.userDirectory.push({ name: state.user.name, email: state.user.email, workspaceId: "northstar" });
+  }
+  persistState();
+  showProduct();
+}
+
+function showProduct() {
+  publicSite.hidden = true;
+  authGate.hidden = true;
+  productApp.hidden = false;
+  updateWorkspaceChrome();
+  setView(state.view || "dashboard");
+}
+
+function updateWorkspaceChrome() {
+  const workspace = currentWorkspace();
+  const name = workspace ? workspace.name : "Your workspace";
+  document.querySelector(".workspace-copy strong").textContent = name;
+  document.querySelector(".workspace-copy small").textContent = `${workspace ? workspace.plan : "Starter"} workspace · ${workspace ? workspace.role : "Owner"}`;
+  document.querySelector(".workspace-avatar").textContent = name.slice(0, 1).toUpperCase();
+  document.querySelector(".breadcrumbs span").textContent = name;
+  document.querySelector(".profile-copy strong").textContent = state.user ? state.user.name : "Workspace owner";
+  document.querySelector(".profile-copy small").textContent = workspace ? workspace.role : "Owner";
+  document.querySelector(".profile-avatar").textContent = state.user ? initials(state.user.name) : "FF";
+  document.querySelector(".top-avatar").textContent = state.user ? initials(state.user.name) : "FF";
+  document.querySelector(".app-footer > span:last-child").textContent = state.user && state.user.demo ? "Demo workspace · Sample data" : "Browser prototype · Data stored locally";
+}
+
+function initials(name) {
+  return String(name || "").split(/\s+/).slice(0, 2).map((part) => part[0] || "").join("").toUpperCase();
+}
+
+const statusClass = (status) => {
+  if (["Approved", "Ready", "Published", "Exported"].includes(status)) return "green";
+  if (["In review", "Suggested"].includes(status)) return "amber";
+  if (["Generating", "In generation"].includes(status)) return "gray";
+  return "gray";
+};
+const chip = (status) => `<span class="status-chip ${statusClass(status)}"><i class="status-dot"></i>${status}</span>`;
+
+function setView(view) {
+  if (view === "analytics") {
+    showToast("Analytics is planned for V1 and is not included in this MVP prototype.");
+    return;
+  }
+  state.view = view;
+  sidebar.classList.remove("open");
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
+  const labels = { dashboard: "Overview", topics: "Topics & batches", review: "Content review", published: "Published pages", settings: "Settings" };
+  Object.assign(labels, { clients: "Client workspaces", team: "Team & access", plans: "Plan & usage" });
+  breadcrumb.textContent = labels[view] || "Overview";
+  render();
+}
+
+function render() {
+  const views = { dashboard: renderDashboard, topics: renderTopics, review: renderReview, published: renderPublished, settings: renderSettings, clients: renderClients, team: renderTeam, plans: renderPlans };
+  appMain.innerHTML = (views[state.view] || renderDashboard)();
+  bindPageEvents();
+}
+
+function renderDashboard() {
+  if (!state.user || !state.user.demo || state.activeWorkspaceId !== "northstar") return renderNewWorkspaceDashboard();
+  const today = new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date());
+  return `
+    <div class="welcome-row">
+      <div>
+        <div class="eyebrow">${today} <span class="demo-chip">DEMO DATA</span></div>
+        <h1>Good morning, ${escapeHtml(state.user.name.split(" ")[0])} <span aria-hidden="true">✳</span></h1>
+        <p class="page-subtitle">A clear view of your industrial content pipeline.</p>
+      </div>
+      <div class="heading-actions"><span class="phase-chip">MVP workspace</span><button class="button primary" data-action="new-batch">${icon("plus")} New batch</button></div>
+    </div>
+    <section class="metric-grid" aria-label="Workspace summary">
+      <article class="metric-card"><div class="metric-top"><span>Batches in progress</span><i class="metric-icon">${icon("layers")}</i></div><div class="metric-value">3</div><div class="metric-foot">Across 3 industrial verticals</div></article>
+      <article class="metric-card"><div class="metric-top"><span>Pages awaiting review</span><i class="metric-icon">${icon("file")}</i></div><div class="metric-value">8</div><div class="metric-foot"><span class="positive">4 ready</span> for your approval</div></article>
+      <article class="metric-card"><div class="metric-top"><span>Pages approved</span><i class="metric-icon">${icon("check")}</i></div><div class="metric-value">24</div><div class="metric-foot">This month <span class="positive">· demo count</span></div></article>
+      <article class="metric-card"><div class="metric-top"><span>Monthly page allowance</span><i class="metric-icon">${icon("chart")}</i></div><div class="metric-value">12<span style="font-size:13px;color:#87938a;font-weight:500"> / 20</span></div><div class="metric-foot">Starter plan · sample usage</div></article>
+    </section>
+    <div class="dashboard-grid">
+      <section class="panel">
+        <div class="panel-heading"><div><h2>Active batches</h2><p>Keep an eye on production from topic to review.</p></div><button class="text-button" data-view="topics">View all ${icon("arrow")}</button></div>
+        <div class="batch-list">${state.batches.map((batch) => `
+          <div class="batch-row">
+            <div class="batch-title"><span class="batch-avatar ${batch.className}">${escapeHtml(batch.initials)}</span><div class="batch-title-copy"><strong>${escapeHtml(batch.name)}</strong><small>${escapeHtml(batch.detail)}</small></div></div>
+            <div class="progress-wrap"><div class="progress-label"><span>Progress</span><span>${batch.progress}%</span></div><div class="progress-track"><span style="width:${batch.progress}%"></span></div></div>
+            ${chip(batch.status)}<span class="batch-date">${batch.date}</span>
+          </div>`).join("")}</div>
+      </section>
+      <section class="panel activity-panel">
+        <div class="panel-heading"><div><h2>Recent activity</h2><p>Updates from your workspace.</p></div><span class="demo-chip">SAMPLE</span></div>
+        <div class="activity-list">
+          <div class="activity-item"><span class="activity-icon">${icon("check")}</span><div class="activity-copy"><strong>Alex Morgan</strong> approved a page in <strong>Food &amp; Beverage · PdM</strong><time>12 min ago</time></div></div>
+          <div class="activity-item"><span class="activity-icon amber">${icon("spark")}</span><div class="activity-copy"><strong>QA auto-patch</strong> resolved a missing CTA in a draft<time>48 min ago</time></div></div>
+          <div class="activity-item"><span class="activity-icon">${icon("layers")}</span><div class="activity-copy">New batch created for <strong>Steel · Energy efficiency</strong><time>Yesterday at 4:32 PM</time></div></div>
+        </div>
+      </section>
+    </div>
+    <div class="taxonomy-banner"><div class="taxonomy-art">${icon("spark")}</div><div class="taxonomy-copy"><h3>Your next industrial topic is already mapped.</h3><p>Browse a seeded taxonomy across 7 verticals, then shape a batch around your product.</p></div><button class="button" data-view="topics">Explore taxonomy ${icon("arrow")}</button></div>
+    <div class="dashboard-grid" style="margin-top:20px">
+      <section class="panel">
+        <div class="panel-heading"><div><h2>Review queue</h2><p>Drafts waiting for a human decision.</p></div><button class="text-button" data-view="review">Open review queue ${icon("arrow")}</button></div>
+        <div class="batch-list">
+          <div class="batch-row"><div class="batch-title"><span class="batch-avatar">01</span><div class="batch-title-copy"><strong>Predictive maintenance for centrifugal pumps</strong><small>Food &amp; Beverage · Updated 12 min ago</small></div></div><span class="status-chip green"><i class="status-dot"></i>QA passed</span><span class="batch-date">Review ${icon("chevron")}</span></div>
+          <div class="batch-row"><div class="batch-title"><span class="batch-avatar orange">02</span><div class="batch-title-copy"><strong>EAF energy optimization software</strong><small>Steel · Updated 48 min ago</small></div></div><span class="status-chip amber"><i class="status-dot"></i>Needs attention</span><span class="batch-date">Review ${icon("chevron")}</span></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-heading"><div><h2>Quality, before publish</h2><p>Every draft follows a reviewable checklist.</p></div></div>
+        <div class="activity-list">
+          <div class="activity-item"><span class="activity-icon">${icon("check")}</span><div class="activity-copy"><strong>Structure checks</strong> for words, FAQs and CTAs<time>Rule-based validation · MVP</time></div></div>
+          <div class="activity-item"><span class="activity-icon">${icon("check")}</span><div class="activity-copy"><strong>Approved link allowlist</strong> and batch uniqueness<time>Review before anything goes live</time></div></div>
+          <div class="activity-item"><span class="activity-icon">${icon("file")}</span><div class="activity-copy"><strong>Schema-ready drafts</strong> with human approval<time>JSON-LD preview in content review</time></div></div>
+        </div>
+      </section>
+    </div>`;
+}
+
+function renderTopics() {
+  const filtered = state.topics.filter((topic) => {
+    const matchesTab = state.topicFilter === "All topics" || topic.status === state.topicFilter;
+    const searchTerm = state.search.toLowerCase();
+    const matchesSearch = !searchTerm || `${topic.title} ${topic.vertical} ${topic.equipment} ${topic.pain}`.toLowerCase().includes(searchTerm);
+    return topic.vertical === state.selectedVertical && matchesTab && matchesSearch;
+  });
+  const tabs = ["All topics", "Suggested", "Approved", "In review"];
+  return `
+    <div class="page-heading"><div><div class="eyebrow">Industrial taxonomy <span class="demo-chip">SEEDED LIBRARY</span></div><h1>Topics &amp; batches</h1><p class="page-subtitle">Start from the industry's equipment and pain points, then build a focused content batch.</p></div><div class="heading-actions"><button class="button" data-action="add-topic">${icon("plus")} Add a topic</button><button class="button primary" data-action="new-batch">${icon("plus")} New batch</button></div></div>
+    <div class="topic-layout">
+      <section class="panel topic-main">
+        <div class="panel-heading"><div><h2>Topic library</h2><p>Explore topics mapped to ${escapeHtml(state.selectedVertical)}.</p></div><span class="status-chip gray">${escapeHtml(state.selectedVertical)}</span></div>
+        <div class="filter-tabs">${tabs.map((tab) => `<button class="filter-tab ${state.topicFilter === tab ? "active" : ""}" data-filter="${tab}">${tab}</button>`).join("")}</div>
+        <div class="topic-toolbar" style="padding:12px 14px 0">
+          <label class="search-box">${icon("search")}<input id="topicSearch" type="search" placeholder="Search equipment, pain points..." value="${escapeHtml(state.search)}" /></label>
+          <button class="button small" data-action="generate-selected">${icon("spark")} Generate selected</button>
+        </div>
+        <div class="table-wrap">
+          <table class="topic-table"><thead><tr><th><input class="table-checkbox" id="selectAll" type="checkbox" aria-label="Select all topics" /></th><th>TOPIC IDEA</th><th>EQUIPMENT</th><th>CONTENT TYPE</th><th>STATUS</th></tr></thead>
+            <tbody>${filtered.length ? filtered.map((topic, index) => `<tr><td><input class="table-checkbox topic-check" type="checkbox" data-index="${state.topics.indexOf(topic)}" aria-label="Select ${escapeHtml(topic.title)}" /></td><td>${escapeHtml(topic.title)}<div style="font-size:8px;color:#9aa39d;font-weight:400;margin-top:4px">${escapeHtml(topic.vertical)} · ${escapeHtml(topic.pain)}</div></td><td>${escapeHtml(topic.equipment)}</td><td><span class="topic-label">${escapeHtml(topic.type)}</span></td><td>${chip(topic.status)}</td></tr>`).join("") : `<tr><td colspan="5"><div class="empty-state">No topics match this filter. Try another search or status.</div></td></tr>`}</tbody>
+          </table>
+        </div>
+      </section>
+      <aside class="panel">
+        <div class="taxonomy-tree">
+          <h3>Explore by vertical</h3><p>Vertical → equipment → pain point</p>
+          <div class="tree-node root"><span class="tree-caret">⌄</span><strong>${escapeHtml(state.selectedVertical)}</strong></div>
+          <div class="tree-line">
+            ${treeEquipmentFor(state.selectedVertical).map((equip) => `<div class="tree-node indent-1"><span class="tree-caret">›</span>${equip.name}</div><div class="tree-node indent-2"><span class="tree-bullet"></span>${equip.pain}</div>`).join("")}
+            <div class="tree-node indent-1"><span class="tree-caret">›</span>Content type</div><div class="tree-node indent-2"><span class="tree-bullet"></span>Solution page</div><div class="tree-node indent-2"><span class="tree-bullet"></span>Use case</div>
+          </div>
+          <div class="tree-action"><button class="text-button" data-action="new-batch">Build a batch from topics ${icon("arrow")}</button></div>
+        </div>
+      </aside>
+    </div>
+    <div style="margin-top:14px"><div class="section-title-row"><h2>Browse verticals</h2><span class="page-subtitle">Seeded library · sample topic counts</span></div>
+      <div class="vertical-grid">${state.verticals.map((vertical) => `<article class="vertical-card ${state.selectedVertical === vertical.name ? "selected" : ""}" data-vertical="${escapeHtml(vertical.name)}"><div class="vertical-card-top"><span class="vertical-icon">${vertical.icon}</span><span class="topic-count">${vertical.count}</span></div><h3>${escapeHtml(vertical.name)}</h3><p>${escapeHtml(vertical.desc)}</p></article>`).join("")}</div>
+    </div>`;
+}
+
+function renderNewWorkspaceDashboard() {
+  const workspace = currentWorkspace();
+  return `<div class="page-heading"><div><div class="eyebrow">YOUR WORKSPACE <span class="demo-chip">SETUP</span></div><h1>Welcome to RankForge AI, ${escapeHtml(state.user ? state.user.name.split(" ")[0] : "there")}.</h1><p class="page-subtitle">Your ${escapeHtml(workspace ? workspace.industry : "industrial")} workspace is ready. Add your team and start a first batch.</p></div><div class="heading-actions"><button class="button primary" data-action="new-batch">${icon("plus")} Create first batch</button></div></div>
+    <div class="onboarding-progress"><div class="onboarding-progress-head"><div><span class="hero-kicker">WORKSPACE SETUP</span><h2>A few small steps to get your team moving.</h2></div><span>1 of 3 complete</span></div><div class="onboarding-track"><i style="width:33%"></i></div><div class="onboarding-steps"><button class="onboarding-step done" data-view="settings"><i>${icon("check")}</i><span><b>Workspace created</b><small>${escapeHtml(workspace ? workspace.name : "")}</small></span><em>Complete</em></button><button class="onboarding-step" data-view="team"><i>2</i><span><b>Invite your collaborators</b><small>Give writers and reviewers the right level of access.</small></span><em>Set up</em></button><button class="onboarding-step" data-view="topics"><i>3</i><span><b>Choose your first topics</b><small>Start with the pre-built industry taxonomy.</small></span><em>Set up</em></button></div></div>
+    <div class="dashboard-grid" style="margin-top:16px"><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Start with your team's expertise</h2><p>Configure this workspace before generating content.</p></div><span class="phase-chip">MVP WORKSPACE</span></div><div class="onboarding-feature-list"><div class="onboarding-feature">${icon("layers")}<span><b>Browse industrial topics</b><small>Equipment, pain points, and content types in one library.</small></span><button class="text-button" data-view="topics">Explore ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("grid")}<span><b>Invite teammates</b><small>Set owner, editor, reviewer, or client-viewer roles.</small></span><button class="text-button" data-view="team">Manage team ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("settings")}<span><b>Set your review guardrails</b><small>Brand context, approved links, and QA rules.</small></span><button class="text-button" data-view="settings">Configure ${icon("arrow")}</button></div></div></section><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Designed for real collaboration</h2><p>Your workspace starts private to you.</p></div></div><div class="onboarding-security">${icon("grid")}<b>One workspace for your organization</b><p>Keep projects together, then invite the right people to participate. You control reviewer and editor access.</p><div class="onboarding-data-note">Prototype note: this experience stores sample account data in this browser. Use a secure backend before adding real company or customer content.</div></div></section></div>`;
+}
+
+function renderClients() {
+  const agencyWorkspace = currentWorkspace() && currentWorkspace().teamType === "Agency";
+  const visibleClients = state.clients;
+  return `<div class="page-heading"><div><div class="eyebrow">MULTI-CLIENT OPERATIONS <span class="demo-chip">${state.user && state.user.demo ? "SAMPLE CLIENTS" : "WORKSPACE"}</span></div><h1>Client workspaces</h1><p class="page-subtitle">Keep client projects distinct and invite the right reviewers to each workspace.</p></div><div class="heading-actions"><button class="button" data-action="client-guide">How access works</button><button class="button primary" data-action="add-client">${icon("plus")} Add a client</button></div></div>
+    ${visibleClients.length ? `<div class="client-summary-grid"><article class="metric-card"><div class="metric-top"><span>Client workspaces</span><i class="metric-icon">${icon("grid")}</i></div><div class="metric-value">${visibleClients.length}</div><div class="metric-foot">Organized by organization</div></article><article class="metric-card"><div class="metric-top"><span>Pages in client projects</span><i class="metric-icon">${icon("file")}</i></div><div class="metric-value">${visibleClients.reduce((sum, client) => sum + Number(client.pages || 0), 0)}</div><div class="metric-foot">Sample project totals</div></article><article class="metric-card"><div class="metric-top"><span>Client approvals</span><i class="metric-icon">${icon("check")}</i></div><div class="metric-value">Role based</div><div class="metric-foot">Viewer access can be limited</div></article></div>
+    <div class="client-grid">${visibleClients.map((client, index) => `<article class="panel client-card"><div class="client-card-top"><span class="client-mark mark-${index % 4}">${escapeHtml(client.name.slice(0, 1))}</span><button class="row-action" data-action="client-menu" data-client="${escapeHtml(client.name)}">···</button></div><h2>${escapeHtml(client.name)}</h2><p>${escapeHtml(client.vertical)} · ${Number(client.pages || 0)} sample pages</p><div class="client-card-bottom">${chip(client.status)}<span>${state.user && state.user.demo ? "Demo workspace" : "New workspace"}</span></div><button class="button client-open" data-action="open-client" data-client="${escapeHtml(client.name)}">Open workspace ${icon("arrow")}</button></article>`).join("")}</div>` : `<div class="panel empty-client-state"><span class="empty-art">${icon("grid")}</span><h2>Your first client workspace starts here.</h2><p>Separate clients by workspace, keep reviewers scoped to their work, and manage delivery from one agency view.</p><button class="button primary" data-action="add-client">${icon("plus")} Add a client workspace</button></div>`}
+    <div class="roadmap-banner">${icon("check")} <span><strong>Client-level roles are a workflow preview.</strong> True client isolation, permissions, and audit history require server-side authorization before production launch.</span></div>`;
+}
+
+function renderTeam() {
+  const roleOptions = ["Owner", "Admin", "Editor", "Reviewer", "Client viewer"];
+  return `<div class="page-heading"><div><div class="eyebrow">PEOPLE &amp; PERMISSIONS</div><h1>Team &amp; access</h1><p class="page-subtitle">Invite collaborators and give each person the access their role requires.</p></div><div class="heading-actions"><span class="phase-chip">${state.members.length} members</span><button class="button primary" data-action="invite-member">${icon("plus")} Invite teammate</button></div></div>
+    <div class="team-summary"><div class="panel team-callout"><span class="taxonomy-art">${icon("grid")}</span><div><h2>One team, clearer responsibilities.</h2><p>Owners control the workspace. Editors prepare drafts. Reviewers approve or request changes. Client viewers can access shared client work.</p></div><button class="text-button" data-action="role-guide">Role guide ${icon("arrow")}</button></div><div class="panel team-seat-card"><div class="eyebrow">WORKSPACE ACCESS</div><b>${state.members.length} <span>people</span></b><small>Team access is managed per workspace.</small></div></div>
+    <section class="panel team-table-panel"><div class="panel-heading"><div><h2>Workspace members</h2><p>Members and outstanding invitations.</p></div><select class="select-lite" id="teamRoleFilter" aria-label="Filter members"><option>All roles</option>${roleOptions.map((role) => `<option>${role}</option>`).join("")}</select></div><div class="table-wrap"><table class="topic-table"><thead><tr><th>MEMBER</th><th>ROLE</th><th>STATUS</th><th>ADDED</th><th></th></tr></thead><tbody>${state.members.map((member, index) => `<tr data-member-role="${escapeHtml(member.role)}"><td><div class="member-cell"><span class="member-avatar avatar-${index % 4}">${escapeHtml(initials(member.name || member.email))}</span><span><b>${escapeHtml(member.name || "Invitation pending")}</b><small>${escapeHtml(member.email)}</small></span></div></td><td><select class="member-role-select" data-member-email="${escapeHtml(member.email)}" aria-label="Role for ${escapeHtml(member.email)}">${roleOptions.map((role) => `<option ${member.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></td><td>${chip(member.status)}</td><td>${member.status === "Invited" ? "Invitation pending" : index === 0 ? "Workspace owner" : "Workspace member"}</td><td><button class="row-action" data-action="remove-member" data-email="${escapeHtml(member.email)}" aria-label="Remove ${escapeHtml(member.email)}">···</button></td></tr>`).join("")}</tbody></table></div></section>
+    <div class="access-note">${icon("clock")} <span><strong>Before inviting real customers:</strong> production access control needs server-side roles, invitation tokens, and verified identity.</span></div>`;
+}
+
+function renderPlans() {
+  const workspace = currentWorkspace();
+  const used = state.user && state.user.demo ? 12 : state.pages.length;
+  const limit = workspace && workspace.plan === "Growth" ? 100 : 20;
+  return `<div class="page-heading"><div><div class="eyebrow">SUBSCRIPTION OVERVIEW</div><h1>Plan &amp; usage</h1><p class="page-subtitle">Understand the workspace allowance and the next plan options.</p></div><span class="demo-chip">BILLING NOT CONNECTED</span></div>
+    <div class="plan-overview-grid"><section class="panel current-plan"><div class="panel-heading"><div><div class="eyebrow">CURRENT WORKSPACE PLAN</div><h2>${escapeHtml(workspace ? workspace.plan : "Starter")} <span class="plan-active">Active preview</span></h2></div><span class="phase-chip">${escapeHtml(workspace ? workspace.name : "")}</span></div><div class="plan-usage"><div class="usage-copy"><span>Pages used this month</span><strong>${used} <small>/ ${limit}</small></strong></div><div class="usage-track"><i style="width:${Math.min(100, used / limit * 100)}%"></i></div><small>${state.user && state.user.demo ? "Illustrative usage in the demo workspace" : "Counts reflect this browser prototype only"}</small></div><div class="plan-feature-list"><span>${icon("check")} Industrial topic library</span><span>${icon("check")} Review workflow</span><span>${icon("check")} HTML export</span><span>${icon("check")} ${workspace && workspace.plan === "Agency" ? "Multi-client workspace preview" : "1 domain"}</span></div><button class="button" data-action="billing-info">Manage billing ${icon("arrow")}</button></section>
+    <section class="panel billing-placeholder"><span class="taxonomy-art">${icon("chart")}</span><h2>Billing is the next connection.</h2><p>Payment collection, invoices, taxes, and subscription changes are not active in this prototype.</p><div class="onboarding-data-note">No card is charged and no payment details are collected here.</div><button class="button" data-action="billing-info">See what needs to launch</button></section></div>
+    <div class="section-title-row plans-heading"><h2>Plan options</h2><span class="page-subtitle">Indicative launch pricing from the project brief</span></div><div class="pricing-grid compact-pricing"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Up to 20 pages monthly</li><li>${icon("check")} 1 domain</li><li>${icon("check")} Review and export</li></ul><button class="button" data-action="billing-info">Choose Starter</button></article><article class="pricing-card featured"><span class="pricing-name">GROWTH</span><h3>For more production volume</h3><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Up to 100 pages monthly</li><li>${icon("check")} Up to 3 domains</li><li>${icon("check")} Team review workflow</li></ul><button class="button primary" data-action="billing-info">Choose Growth</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client programs</h3><div class="price custom-price">Custom</div><ul><li>${icon("check")} Multi-client organization</li><li>${icon("check")} Role-based access preview</li><li>${icon("check")} White-label planned for V1</li></ul><button class="button" data-action="billing-info">Contact sales</button></article></div>`;
+}
+
+function treeEquipmentFor(vertical) {
+  const map = {
+    "Food & Beverage": [{ name: "Centrifugal pumps", pain: "Unplanned downtime" }, { name: "Conveyor lines", pain: "Line stoppages" }],
+    Automotive: [{ name: "Weld cells", pain: "Quality defects" }, { name: "Stamping presses", pain: "Unplanned downtime" }],
+    Steel: [{ name: "Electric arc furnace", pain: "Energy costs" }, { name: "Continuous casting", pain: "Product quality" }],
+    HVAC: [{ name: "Rooftop units", pain: "Fault detection" }, { name: "Building systems", pain: "Energy efficiency" }],
+    Textile: [{ name: "Spinning frames", pain: "Yarn breakage" }, { name: "Cutting rooms", pain: "Fabric waste" }],
+    Cement: [{ name: "Rotary kiln", pain: "Fuel consumption" }, { name: "Mills", pain: "Unplanned downtime" }],
+    "SCADA & Automation": [{ name: "PLC / MES", pain: "Data integration" }, { name: "OPC UA", pain: "System interoperability" }]
+  };
+  return map[vertical] || map["Food & Beverage"];
+}
+
+function renderReview() {
+  if (!state.user || !state.user.demo || state.activeWorkspaceId !== "northstar") return `<div class="page-heading"><div><div class="eyebrow">HUMAN APPROVAL</div><h1>Content review</h1><p class="page-subtitle">Drafts stay in review until a workspace member approves them.</p></div></div><div class="panel empty-client-state"><span class="empty-art">${icon("file")}</span><h2>Your review queue is ready.</h2><p>Start by creating a topic batch. Generated pages will appear here with their structure and QA status.</p><button class="button primary" data-view="topics">Explore topic library ${icon("arrow")}</button></div>`;
+  const patched = state.qaPatched;
+  const checklist = [
+    { name: "Word count", value: patched ? "2,940 words" : "2,940 words", type: "pass" },
+    { name: "FAQs", value: "5 included", type: "pass" },
+    { name: "CTA", value: patched ? "CTA included" : "Missing CTA", type: patched ? "pass" : "fail" },
+    { name: "Link allowlist", value: "2 approved links", type: "pass" },
+    { name: "Batch uniqueness", value: "Distinct layout", type: "pass" },
+    { name: "Schema", value: "Article · FAQPage", type: "pass" }
+  ];
+  return `
+    <div class="review-wrap">
+      <div class="review-page-heading">
+        <div class="review-title-group"><button class="back-button" data-view="dashboard" aria-label="Back to overview">${icon("arrow")}</button><div><div class="eyebrow">Food &amp; Beverage · PdM batch</div><h1>Predictive maintenance for centrifugal pumps</h1><div class="review-meta">Solution page <span>·</span> Draft v3 <span>·</span> Updated 12 min ago <span>·</span> ${chip(state.approved ? "Approved" : patched ? "Ready" : "Needs attention")}</div></div></div>
+        <div class="review-actions"><button class="button" data-action="request-changes">Request changes</button><button class="button primary" data-action="approve" ${patched && !state.approved ? "" : "disabled"}>${icon("check")} ${state.approved ? "Approved" : "Approve draft"}</button></div>
+      </div>
+      <div class="qa-strip"><span class="qa-label">Quality checks</span>${checklist.map((item) => `<span class="qa-pill ${item.type}">${item.type === "pass" ? icon("check") : icon("close")} ${item.name} · ${item.value}</span>`).join("")}</div>
+      <div class="review-toolbar">
+        <div class="review-tabs">${["Draft", "Version diff"].map((tab) => `<button class="review-tab ${state.reviewTab === tab ? "active" : ""}" data-review-tab="${tab}">${tab}</button>`).join("")}</div>
+        <div class="review-note">${icon("clock")} QA checks run on the current draft. Human review is required before export.</div>
+      </div>
+      <div class="review-columns">
+        <section class="panel preview-card">
+          <div class="preview-top"><span>${icon("external")} Live page preview</span><span>Preview mode</span></div>
+          <div class="preview-site"><span class="site-dots"><i></i><i></i><i></i></span><span>northstarindustrial.com / resources / centrifugal-pump-pdm</span></div>
+          <article class="preview-document">
+            <div class="preview-kicker">PREDICTIVE MAINTENANCE · FOOD &amp; BEVERAGE</div>
+            <h2>Predictive maintenance for centrifugal pumps: reduce unplanned downtime</h2>
+            <p class="lead">Predictive maintenance software helps food and beverage teams spot early signs of centrifugal pump wear, schedule service around production, and reduce avoidable interruptions.</p>
+            <div class="preview-visual"><div class="visual-line"></div><div class="visual-node"><i>◉</i><span>Collect<br/>equipment data</span></div><div class="visual-node"><i>⌁</i><span>Detect<br/>anomalies</span></div><div class="visual-node"><i>✓</i><span>Plan<br/>maintenance</span></div></div>
+            <h3>Why pump reliability matters on a production line</h3>
+            <p>Centrifugal pumps support cleaning, transfer, and processing operations across food and beverage facilities. A failure can interrupt a connected line, delay a cleaning cycle, or require unplanned maintenance during a production window.</p>
+            <div class="preview-callout">Answer first: Teams can reduce avoidable pump downtime by monitoring operating signals, identifying changes early, and aligning maintenance with production schedules.</div>
+            <h3>How predictive maintenance works for centrifugal pumps</h3>
+            <p>A condition-monitoring workflow gathers equipment data, compares current behavior with operating baselines, and gives maintenance teams a clearer signal to investigate.</p>
+            <h3>Frequently asked questions</h3>
+            <p>Learn how monitoring can fit existing maintenance routines and which pump signals are useful to track.</p>
+            ${patched ? `<div class="preview-callout" style="border-color:#75a27d"><strong>See how Northstar can help.</strong> Book a walkthrough with our industrial reliability team.</div>` : ""}
+          </article>
+        </section>
+        <section class="panel editor-card">
+          <div class="editor-top"><span>${icon("file")} Structured draft</span><div class="editor-tabs">${["Content", "FAQ", "JSON-LD"].map((tab) => `<button class="editor-tab ${state.activeEditorTab === tab ? "active" : ""}" data-editor-tab="${tab}">${tab}</button>`).join("")}</div></div>
+          <div class="editor-content">${renderEditorContent()}</div>
+          <div class="editor-bottom"><span>Changes save to this draft</span><button data-action="auto-patch">${patched ? "Patched · review change" : `${icon("spark")} Auto-patch`}</button></div>
+        </section>
+      </div>
+      <div class="taxonomy-banner" style="margin-top:0"><div class="taxonomy-art">${icon("file")}</div><div class="taxonomy-copy"><h3>${state.approved ? "This draft is approved for export" : "Export is available after approval"}</h3><p>Approved drafts can be downloaded as clean HTML or copied into your CMS. Direct publishing is planned for V1.</p></div><button class="button" data-action="export" ${state.approved ? "" : "disabled"}>Export HTML ${icon("arrow")}</button></div>
+    </div>`;
+}
+
+function renderEditorContent() {
+  if (state.reviewTab === "Version diff") {
+    return `<div class="editor-section-label">Latest patch pass · Draft v2 → v3</div><div class="diff-box"><strong>Structural checks</strong><br/>✓ FAQ count meets the minimum<br/>✓ Link allowlist is compliant<br/>✓ Batch layout is distinct<br/><br/><span class="diff-add">+ ${state.qaPatched ? "Added approved CTA to the final section." : "CTA is missing; auto-patch can add the approved CTA."}</span><br/>No changes to technical claims.</div><div class="roadmap-banner">${icon("clock")} Diff preview is sample data for this prototype.</div>`;
+  }
+  if (state.activeEditorTab === "JSON-LD") {
+    return `<div class="editor-section-label">Generated structured data · MVP</div><div class="schema-preview">&lt;script type="application/ld+json"&gt;\n{\n  "@context": "https://schema.org",\n  "@type": "Article",\n  "headline": "Predictive maintenance for centrifugal pumps",\n  "author": { "@type": "Organization", "name": "Northstar Industrial" }\n}\n&lt;/script&gt;\n\nFAQPage schema is included for the five draft FAQs.</div><div class="roadmap-banner">${icon("spark")} Confirm organization details before exporting schema to a live site.</div>`;
+  }
+  if (state.activeEditorTab === "FAQ") {
+    return `<div class="editor-section-label">Frequently asked questions · 5 included</div>
+      <div class="editor-faq"><strong>What is predictive maintenance for centrifugal pumps?</strong><span>It uses equipment condition data to identify changes that may signal a need for inspection or service.</span></div>
+      <div class="editor-faq"><strong>Which pump signals can maintenance teams monitor?</strong><span>Teams commonly review operating conditions such as vibration, temperature, pressure, and flow in context.</span></div>
+      <div class="editor-faq"><strong>How does monitoring support food production?</strong><span>It can help teams plan maintenance around production needs and investigate unusual equipment behavior earlier.</span></div>
+      <div class="editor-faq"><strong>Can predictive maintenance work with existing systems?</strong><span>Implementation depends on available sensor data, controls, and the facility's integration approach.</span></div>
+      <div class="editor-faq"><strong>When should a pump be inspected?</strong><span>Inspection timing depends on equipment condition, operating context, and manufacturer guidance.</span></div>`;
+  }
+  return `<div class="editor-block"><div class="editor-section-label">Page headline</div><textarea class="editor-field title-field" rows="2">Predictive maintenance for centrifugal pumps: reduce unplanned downtime</textarea></div>
+    <div class="editor-block"><div class="editor-section-label">Answer-first introduction</div><textarea class="editor-field" rows="5">Predictive maintenance software helps food and beverage teams spot early signs of centrifugal pump wear, schedule service around production, and reduce avoidable interruptions. It combines equipment signals with maintenance context so teams can investigate changes before they become disruptive failures.</textarea></div>
+    <div class="editor-block"><div class="editor-section-label">Page structure</div><div class="editor-faq"><strong>01 · Why pump reliability matters on a production line</strong><span>Section introduction · 3 paragraphs</span></div><div class="editor-faq"><strong>02 · How predictive maintenance works for pumps</strong><span>Section introduction · 4 paragraphs</span></div><div class="editor-faq"><strong>03 · A practical implementation checklist</strong><span>Section introduction · 5 steps</span></div></div>
+    <div class="editor-block"><div class="editor-section-label">Approved links</div><div class="link-row">${icon("check")} /book-a-demo <span class="topic-label">Allowlisted</span></div><div class="link-row">${icon("check")} /support <span class="topic-label">Allowlisted</span></div></div>`;
+}
+
+function renderPublished() {
+  const pages = state.pages.filter((page) => !state.search || `${page.title} ${page.batch} ${page.schema}`.toLowerCase().includes(state.search.toLowerCase()));
+  return `
+    <div class="page-heading"><div><div class="eyebrow">Content library <span class="demo-chip">DEMO DATA</span></div><h1>Published pages</h1><p class="page-subtitle">Approved content ready to export or already shared with your CMS.</p></div><div class="heading-actions"><button class="button" data-action="export-all">Export selected</button><button class="button primary" data-action="new-batch">${icon("plus")} New batch</button></div></div>
+    <section class="panel published-panel">
+      <div class="panel-heading"><div><h2>Page library</h2><p>${pages.length} sample pages across your workspace</p></div><div class="published-tools"><label class="search-box">${icon("search")}<input id="publishedSearch" type="search" placeholder="Search pages..." value="${escapeHtml(state.search)}" /></label><select class="select-lite" aria-label="Filter by status"><option>All statuses</option><option>Approved</option><option>Exported</option></select></div></div>
+      <div class="table-wrap"><table class="topic-table"><thead><tr><th><input class="table-checkbox" type="checkbox" aria-label="Select all pages" /></th><th>PAGE TITLE</th><th>BATCH</th><th>SCHEMA</th><th>STATUS</th><th>DATE</th><th></th></tr></thead>
+      <tbody>${pages.length ? pages.map((page, index) => `<tr><td><input class="table-checkbox page-check" type="checkbox" data-index="${index}" aria-label="Select ${escapeHtml(page.title)}" /></td><td><div class="page-title-cell"><span class="page-mini-icon">${icon("file")}</span>${escapeHtml(page.title)}</div></td><td>${escapeHtml(page.batch)}</td><td><span class="topic-label">${escapeHtml(page.schema)}</span></td><td>${chip(page.status)}</td><td>${page.date}</td><td><button class="row-action" data-action="export" aria-label="Export ${escapeHtml(page.title)}">Export ↓</button></td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state">No pages found for that search.</div></td></tr>`}</tbody></table></div>
+    </section>
+    <div class="roadmap-banner">${icon("chart")} <span><strong>Traffic and ranking reports</strong> are planned for V1 after Search Console or analytics integrations are connected. This prototype does not report live performance.</span></div>`;
+}
+
+function renderSettings() {
+  const workspace = currentWorkspace();
+  const email = state.user ? state.user.email : "";
+  const company = workspace ? workspace.name : "Your company";
+  const industry = workspace ? workspace.industry : "Other industrial / technical";
+  const allowedLinks = workspace && Array.isArray(workspace.approvedLinks) && workspace.approvedLinks.length ? workspace.approvedLinks : ["northstarindustrial.com/book-a-demo", "northstarindustrial.com/support"];
+  return `
+    <div class="page-heading"><div><div class="eyebrow">Workspace setup</div><h1>Settings</h1><p class="page-subtitle">Set the context and guardrails your draft pipeline should follow.</p></div><span class="phase-chip">MVP setup</span></div>
+    <div class="settings-grid">
+      <section class="panel settings-card"><h2>Company &amp; product</h2><p>Give topic suggestions the context to stay relevant.</p><div class="settings-field"><label>Company name</label><input value="${escapeHtml(company)}" /></div><div class="settings-field"><label>Website</label><input value="${escapeHtml(workspace ? workspace.website : "")}" /></div><div class="settings-field"><label>Product description</label><textarea>${state.user && state.user.demo ? "Predictive maintenance software for food and beverage manufacturers." : ""}</textarea></div><div class="settings-field"><label>Primary industry</label><select>${[industry, ...state.verticals.map(v => v.name).filter(v => v !== industry)].map(value => `<option>${escapeHtml(value)}</option>`).join("")}</select></div><div class="settings-field"><label>Workspace owner</label><input value="${escapeHtml(email)}" readonly /></div><button class="button primary" data-action="save-settings">Save workspace details</button></section>
+      <section class="panel settings-card"><h2>Brand voice &amp; links</h2><p>Keep technical content consistent and outbound links controlled.</p><div class="settings-field"><label>Writing style</label><select><option>Clear, practical, technically grounded</option><option>Concise and executive-focused</option></select></div><div class="settings-field"><label>Approved CTA</label><input value="${escapeHtml(workspace && workspace.approvedCta ? workspace.approvedCta : "Book a demo with our team")}" /></div><div class="settings-field"><label>Allowed links</label>${allowedLinks.map((link) => `<div class="link-row">${icon("check")} ${escapeHtml(link)}</div>`).join("")}</div><button class="button" data-action="add-link">${icon("plus")} Add approved link</button></section>
+      <section class="panel settings-card"><h2>Quality rules</h2><p>Rule-based checks make drafts easier to review.</p><div class="settings-field"><label>Target word count</label><input value="2,800 – 3,500 words" /></div><div class="settings-field"><label>Minimum FAQs</label><input value="5" /></div><div class="settings-field"><label>Required structure</label><div class="link-row">${icon("check")} Answer-first section introductions</div><div class="link-row">${icon("check")} FAQ and Article JSON-LD</div><div class="link-row">${icon("check")} No unapproved outbound links</div></div><button class="button primary" data-action="save-settings">Save QA rules</button></section>
+      <section class="panel settings-card"><h2>Team &amp; agency controls</h2><p>Workspace roles and branding controls.</p><div class="link-row"><span class="profile-avatar">AM</span><span style="flex:1">Alex Morgan · Owner</span><span class="topic-label">Owner</span></div><div class="roadmap-banner">${icon("clock")} <span><strong>Multi-client workspaces and white-label branding</strong> are planned for V1. They are not active in this MVP workspace.</span></div></section>
+    </div>`;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+}
+
+function showToast(message) {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  toast.textContent = message;
+  toastRegion.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 3200);
+}
+
+function openModal(content) {
+  modalContent.innerHTML = content;
+  modalContent.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action, button)));
+  modalBackdrop.hidden = false;
+  const firstInput = modalContent.querySelector("input, select");
+  if (firstInput) firstInput.focus();
+}
+
+function closeModal() {
+  modalBackdrop.hidden = true;
+}
+
+function openBatchModal() {
+  openModal(`<div class="eyebrow">Create content batch</div><h2 id="modalTitle">Start with an industrial topic cluster</h2><p class="modal-intro">Choose a vertical and give this batch a working name. Topic suggestions in this prototype use the seeded taxonomy.</p>
+    <div class="settings-field"><label for="batchName">Batch name</label><input id="batchName" value="${escapeHtml(state.selectedVertical)} · New topic batch" /></div>
+    <div class="settings-field"><label for="batchVertical">Industry vertical</label><select id="batchVertical">${state.verticals.map((v) => `<option ${v.name === state.selectedVertical ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}</select></div>
+    <div class="topic-preview-box">Suggested topic dimensions<br/>Equipment → pain point → content type<br/><strong>${treeEquipmentFor(state.selectedVertical).map((x) => x.name).join(" · ")}</strong></div>
+    <div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="create-batch">${icon("spark")} Create batch</button></div>`);
+}
+
+function openWorkspaceModal() {
+  openModal(`<div class="eyebrow">ORGANIZATION SWITCHER</div><h2 id="modalTitle">Your workspaces</h2><p class="modal-intro">Each organization has its own team setup and client projects.</p><div class="workspace-choice-list">${state.workspaces.map((workspace) => `<button class="workspace-choice ${workspace.id === state.activeWorkspaceId ? "selected" : ""}" data-action="switch-workspace" data-workspace="${escapeHtml(workspace.id)}"><span class="workspace-choice-avatar">${escapeHtml(workspace.name.slice(0, 1))}</span><span><b>${escapeHtml(workspace.name)}</b><small>${escapeHtml(workspace.industry)} · ${escapeHtml(workspace.role)}</small></span><i>${workspace.id === state.activeWorkspaceId ? icon("check") : icon("chevron")}</i></button>`).join("")}</div><div class="modal-footer modal-footer-between"><button class="button" data-action="create-workspace-form">${icon("plus")} New workspace</button><button class="button" data-action="close-modal">Done</button></div>`);
+}
+
+function openWorkspaceForm() {
+  openModal(`<div class="eyebrow">NEW ORGANIZATION</div><h2 id="modalTitle">Create a workspace</h2><p class="modal-intro">Separate a business, brand, or client team into its own workspace.</p><div class="settings-field"><label for="workspaceName">Workspace name</label><input id="workspaceName" placeholder="e.g. Northstar Europe" /></div><div class="settings-field"><label for="workspaceIndustry">Industry</label><select id="workspaceIndustry">${state.verticals.map((vertical) => `<option>${escapeHtml(vertical.name)}</option>`).join("")}<option>Agency</option><option>Other industrial / technical</option></select></div><div class="modal-footer"><button class="button" data-action="switcher-back">Cancel</button><button class="button primary" data-action="save-workspace">Create workspace</button></div>`);
+}
+
+function openInviteModal() {
+  openModal(`<div class="eyebrow">TEAM ACCESS</div><h2 id="modalTitle">Invite a teammate</h2><p class="modal-intro">Choose the role before sending an invitation. Invitations are simulated in this prototype.</p><div class="settings-field"><label for="inviteEmail">Work email</label><input id="inviteEmail" type="email" placeholder="teammate@company.com" /></div><div class="settings-field"><label for="inviteRole">Workspace role</label><select id="inviteRole"><option>Editor</option><option>Reviewer</option><option>Admin</option><option>Client viewer</option></select></div><div class="auth-consent"><span>${icon("check")}</span> Production invites need verified email and expiring invitation tokens.</div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="send-invite">Add teammate</button></div>`);
+}
+
+function bindPageEvents() {
+  appMain.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
+  document.querySelectorAll("[data-action]").forEach((button) => button.addEventListener("click", () => handleAction(button.dataset.action, button)));
+  document.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { state.topicFilter = button.dataset.filter; render(); }));
+  document.querySelectorAll("[data-vertical]").forEach((card) => card.addEventListener("click", () => { state.selectedVertical = card.dataset.vertical; render(); }));
+  document.querySelectorAll("[data-review-tab]").forEach((button) => button.addEventListener("click", () => { state.reviewTab = button.dataset.reviewTab; render(); }));
+  document.querySelectorAll("[data-editor-tab]").forEach((button) => button.addEventListener("click", () => { state.activeEditorTab = button.dataset.editorTab; render(); }));
+  const topicSearch = document.getElementById("topicSearch");
+  if (topicSearch) topicSearch.addEventListener("input", (event) => { state.search = event.target.value; const position = event.target.selectionStart; render(); const next = document.getElementById("topicSearch"); next.focus(); next.setSelectionRange(position, position); });
+  const publishedSearch = document.getElementById("publishedSearch");
+  if (publishedSearch) publishedSearch.addEventListener("input", (event) => { state.search = event.target.value; const position = event.target.selectionStart; render(); const next = document.getElementById("publishedSearch"); next.focus(); next.setSelectionRange(position, position); });
+  const selectAll = document.getElementById("selectAll");
+  if (selectAll) selectAll.addEventListener("change", () => document.querySelectorAll(".topic-check").forEach((checkbox) => { checkbox.checked = selectAll.checked; }));
+  const teamRoleFilter = document.getElementById("teamRoleFilter");
+  if (teamRoleFilter) teamRoleFilter.addEventListener("change", () => {
+    document.querySelectorAll("[data-member-role]").forEach((row) => { row.hidden = teamRoleFilter.value !== "All roles" && row.dataset.memberRole !== teamRoleFilter.value; });
+  });
+  document.querySelectorAll(".member-role-select").forEach((select) => select.addEventListener("change", () => {
+    const member = state.members.find((item) => item.email === select.dataset.memberEmail);
+    if (member) { member.role = select.value; persistState(); showToast(`Role updated to ${select.value} in this local prototype.`); }
+  }));
+}
+
+function handleAction(action, button) {
+  if (action === "new-batch") return openBatchModal();
+  if (action === "close-modal") return closeModal();
+  if (action === "workspace-switcher") return openWorkspaceModal();
+  if (action === "create-workspace-form") return openWorkspaceForm();
+  if (action === "switcher-back") return openWorkspaceModal();
+  if (action === "save-workspace") {
+    const name = document.getElementById("workspaceName").value.trim();
+    const industry = document.getElementById("workspaceIndustry").value;
+    if (!name) return showToast("Enter a name for this workspace.");
+    const workspace = { id: `workspace-${Date.now()}`, name, industry, plan: "Starter", role: "Owner", website: "" };
+    saveCurrentWorkspaceData();
+    state.workspaces.push(workspace);
+    state.activeWorkspaceId = workspace.id;
+    state.selectedVertical = state.verticals.some((vertical) => vertical.name === industry) ? industry : "Food & Beverage";
+    state.topics = [];
+    state.batches = [];
+    state.pages = [];
+    state.members = [{ name: state.user.name, email: state.user.email, role: "Owner", status: "Active" }];
+    state.clients = [];
+    state.workspaceData[workspace.id] = { topics: state.topics, batches: state.batches, pages: state.pages, members: state.members, clients: state.clients };
+    persistState();
+    closeModal();
+    updateWorkspaceChrome();
+    setView("dashboard");
+    showToast("Workspace created in this browser prototype.");
+    return;
+  }
+  if (action === "switch-workspace") {
+    saveCurrentWorkspaceData();
+    state.activeWorkspaceId = button.dataset.workspace;
+    loadWorkspaceData(state.activeWorkspaceId);
+    const workspace = currentWorkspace();
+    if (workspace && state.verticals.some((vertical) => vertical.name === workspace.industry)) state.selectedVertical = workspace.industry;
+    state.view = "dashboard";
+    persistState();
+    closeModal();
+    updateWorkspaceChrome();
+    setView("dashboard");
+    return;
+  }
+  if (action === "invite-member") return openInviteModal();
+  if (action === "send-invite") {
+    const email = document.getElementById("inviteEmail").value.trim().toLowerCase();
+    const role = document.getElementById("inviteRole").value;
+    if (!email.includes("@")) return showToast("Enter a valid email address.");
+    if (state.members.some((member) => member.email.toLowerCase() === email)) return showToast("This email already has workspace access.");
+    state.members.push({ name: email.split("@")[0].replace(/[._-]/g, " "), email, role, status: "Invited" });
+    persistState();
+    closeModal();
+    render();
+    showToast("Invitation added as pending. No email was sent.");
+    return;
+  }
+  if (action === "remove-member") {
+    const member = state.members.find((item) => item.email === button.dataset.email);
+    if (!member) return;
+    if (member.role === "Owner") return showToast("The workspace owner cannot be removed.");
+    state.members = state.members.filter((item) => item.email !== member.email);
+    persistState();
+    render();
+    showToast("Member removed from this local prototype workspace.");
+    return;
+  }
+  if (action === "role-guide") {
+    return openModal(`<div class="eyebrow">ACCESS MODEL</div><h2 id="modalTitle">Choose the right workspace role</h2><div class="role-guide-list"><p><b>Owner / Admin</b><span>Configure workspace details, members, and projects.</span></p><p><b>Editor</b><span>Prepare topics and drafts for review.</span></p><p><b>Reviewer</b><span>Review drafts and approve or request changes.</span></p><p><b>Client viewer</b><span>View shared client work without accessing other agency projects.</span></p></div><div class="onboarding-data-note">These are UI roles only. Enforce all permissions in a trusted server before production.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Got it</button></div>`);
+  }
+  if (action === "add-client") {
+    return openModal(`<div class="eyebrow">CLIENT ONBOARDING</div><h2 id="modalTitle">Add a client workspace</h2><p class="modal-intro">Keep client content, approved links, and review access organized in a separate workspace.</p><div class="settings-field"><label for="clientName">Client / organization name</label><input id="clientName" placeholder="e.g. Apex Steel Systems" /></div><div class="settings-field"><label for="clientIndustry">Industry</label><select id="clientIndustry">${state.verticals.map((vertical) => `<option>${escapeHtml(vertical.name)}</option>`).join("")}</select></div><div class="settings-field"><label for="clientContact">Client reviewer email (optional)</label><input id="clientContact" type="email" placeholder="reviewer@client.com" /></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-client">Create workspace</button></div>`);
+  }
+  if (action === "save-client") {
+    const name = document.getElementById("clientName").value.trim();
+    const vertical = document.getElementById("clientIndustry").value;
+    const contact = document.getElementById("clientContact").value.trim();
+    if (!name) return showToast("Enter a client or organization name.");
+    if (contact && !contact.includes("@")) return showToast("Enter a valid client reviewer email or leave it blank.");
+    const id = `client-${Date.now()}`;
+    state.clients.push({ id, name, vertical, pages: 0, status: "Onboarding", contact });
+    state.workspaces.push({ id, name, industry: vertical, plan: "Agency", role: "Admin", website: "", teamType: "Client" });
+    state.workspaceData[id] = {
+      topics: [],
+      batches: [],
+      pages: [],
+      members: [
+        { name: state.user.name, email: state.user.email, role: "Admin", status: "Active" },
+        ...(contact ? [{ name: contact.split("@")[0].replace(/[._-]/g, " "), email: contact, role: "Client viewer", status: "Invited" }] : [])
+      ],
+      clients: []
+    };
+    persistState();
+    closeModal();
+    render();
+    showToast("Client workspace added. Add project data and permissions before sharing.");
+    return;
+  }
+  if (action === "client-guide") {
+    return openModal(`<div class="eyebrow">WORKSPACE BOUNDARIES</div><h2 id="modalTitle">How client access should work</h2><p class="modal-intro">Each client should have its own server-enforced organization boundary, members, content, and audit history. Client viewers should only receive access to the projects shared with them.</p><div class="role-guide-list"><p><b>Agency team</b><span>Manage client workspaces with scoped internal roles.</span></p><p><b>Client reviewer</b><span>Only review content explicitly shared to their client workspace.</span></p><p><b>Isolation</b><span>Enforced by backend authorization on every request — not a front-end filter.</span></p></div><div class="onboarding-data-note">This frontend prototype illustrates the workflows but does not implement secure tenant isolation.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
+  }
+  if (action === "open-client") {
+    const client = state.clients.find((item) => item.name === button.dataset.client);
+    if (!client) return showToast("That client workspace is no longer available.");
+    saveCurrentWorkspaceData();
+    state.activeWorkspaceId = client.id;
+    loadWorkspaceData(client.id);
+    if (state.verticals.some((vertical) => vertical.name === client.vertical)) state.selectedVertical = client.vertical;
+    updateWorkspaceChrome();
+    persistState();
+    setView("topics");
+    showToast(`Opened ${client.name}. Production access still requires server-side authorization.`);
+    return;
+  }
+  if (action === "client-menu") return showToast(`Client workspace: ${button.dataset.client}. Use the card to open this client.`);
+  if (action === "billing-info") {
+    return openModal(`<div class="eyebrow">COMMERCE INTEGRATION</div><h2 id="modalTitle">Billing is not active yet.</h2><p class="modal-intro">Connect a payment provider, subscription lifecycle, receipts, failed-payment handling, taxes, and cancellation flows before accepting customers.</p><div class="onboarding-data-note">The prices shown are indicative launch pricing from the project brief. This prototype does not collect payment details or create subscriptions.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
+  }
+  if (action === "sign-out") {
+    state.user = null;
+    localStorage.setItem(storageKey, JSON.stringify({ ...state, user: null }));
+    showPublic();
+    return;
+  }
+  if (action === "mobile-menu") return showToast("Use the menu button to open navigation on the workspace.");
+  if (action === "create-batch") {
+    const name = document.getElementById("batchName").value.trim();
+    const vertical = document.getElementById("batchVertical").value;
+    if (!name) return showToast("Add a name for your batch before continuing.");
+    state.selectedVertical = vertical;
+    state.batches.unshift({ name, detail: "Created just now · seeded topic suggestions", initials: vertical.slice(0, 2).toUpperCase(), className: "", progress: 0, status: "Suggested", date: "Just now" });
+    persistState();
+    closeModal();
+    setView("topics");
+    showToast("Batch created with sample topic suggestions.");
+    return;
+  }
+  if (action === "auto-patch") {
+    if (!state.qaPatched) {
+      state.qaPatched = true;
+      state.reviewTab = "Version diff";
+      render();
+        persistState();
+      showToast("Sample auto-patch added the approved CTA. Re-check the draft before approval.");
+    } else {
+      state.reviewTab = "Version diff";
+      render();
+      showToast("Showing the sample patch diff.");
+    }
+    return;
+  }
+  if (action === "approve") {
+    if (!state.qaPatched) return showToast("Resolve the missing CTA before approving this sample draft.");
+    state.approved = true;
+    state.pages.unshift({ title: "Predictive maintenance for centrifugal pumps", batch: "Food & Beverage · PdM", date: "May 21, 2025", status: "Approved", schema: "Article · FAQPage" });
+    showToast("Sample draft approved. Export is now available.");
+    persistState();
+    render();
+    return;
+  }
+  if (action === "request-changes") {
+    openModal(`<div class="eyebrow">Reviewer feedback</div><h2 id="modalTitle">Request a change</h2><p class="modal-intro">Leave a note for the person preparing this draft.</p><div class="settings-field"><label for="reviewComment">Comment</label><textarea id="reviewComment" placeholder="Describe the section or detail that needs attention..."></textarea></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="submit-feedback">Send feedback</button></div>`);
+    return;
+  }
+  if (action === "submit-feedback") {
+    const comment = document.getElementById("reviewComment").value.trim();
+    if (!comment) return showToast("Add a comment so the requested change is clear.");
+    closeModal();
+    showToast("Feedback saved to the sample review thread.");
+    return;
+  }
+  if (action === "export" || action === "export-all") {
+    if (action === "export" && !state.approved) return showToast("Approve this draft before exporting.");
+    const html = "<!doctype html><html><head><title>Industrial content export</title></head><body><h1>Predictive maintenance for centrifugal pumps</h1><p>Sample HTML export from the RankForge AI prototype. Review technical details before publishing.</p></body></html>";
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "rankforge-ai-content-export.html";
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showToast("Sample HTML export downloaded. Review before publishing.");
+    return;
+  }
+  if (action === "generate-selected") {
+    const selected = [...document.querySelectorAll(".topic-check:checked")];
+    if (!selected.length) return showToast("Select one or more topics to start a batch.");
+    showToast(`${selected.length} sample topic${selected.length === 1 ? "" : "s"} added to a generation queue.`);
+    return;
+  }
+  if (action === "add-topic") {
+    openModal(`<div class="eyebrow">Topic suggestion</div><h2 id="modalTitle">Add an industrial topic</h2><p class="modal-intro">Add a topic to your workspace's review queue.</p><div class="settings-field"><label for="topicName">Topic idea</label><input id="topicName" placeholder="e.g. Predictive maintenance for filling machines" /></div><div class="settings-field"><label for="topicVertical">Vertical</label><select id="topicVertical">${state.verticals.map((v) => `<option ${v.name === state.selectedVertical ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}</select></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-topic">Add topic</button></div>`);
+    return;
+  }
+  if (action === "save-topic") {
+    const title = document.getElementById("topicName").value.trim();
+    const vertical = document.getElementById("topicVertical").value;
+    if (!title) return showToast("Enter a topic idea first.");
+    state.topics.unshift({ title, vertical, equipment: "To classify", pain: "To define", type: "Solution page", status: "Suggested" });
+    persistState();
+    closeModal();
+    setView("topics");
+    showToast("Topic added to your sample suggestions.");
+    return;
+  }
+  if (action === "save-settings") {
+    const workspace = currentWorkspace();
+    const cards = document.querySelectorAll(".settings-card");
+    const companyInputs = cards[0] ? cards[0].querySelectorAll("input") : [];
+    if (companyInputs.length && workspace) {
+      const name = companyInputs[0].value.trim();
+      if (!name) return showToast("Workspace name cannot be empty.");
+      workspace.name = name;
+      workspace.website = companyInputs[1].value.trim();
+    }
+    const ctaInput = cards[1] ? cards[1].querySelector("input") : null;
+    if (ctaInput && workspace) workspace.approvedCta = ctaInput.value.trim();
+    persistState();
+    updateWorkspaceChrome();
+    render();
+    showToast("Workspace settings saved locally.");
+    return;
+  }
+  if (action === "add-link") {
+    openModal(`<div class="eyebrow">Quality guardrails</div><h2 id="modalTitle">Add an approved link</h2><p class="modal-intro">Only links on this list may be suggested for draft content.</p><div class="settings-field"><label for="approvedLink">URL or site path</label><input id="approvedLink" placeholder="https://example.com/resource" /></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-link">Add link</button></div>`);
+    return;
+  }
+  if (action === "save-link") {
+    const value = document.getElementById("approvedLink").value.trim();
+    if (!value) return showToast("Enter a URL or site path to add it.");
+    const workspace = currentWorkspace();
+    workspace.approvedLinks = workspace.approvedLinks || [];
+    if (workspace.approvedLinks.includes(value)) return showToast("That approved link is already in the list.");
+    workspace.approvedLinks.push(value);
+    persistState();
+    closeModal();
+    render();
+    showToast("Approved link saved in this prototype workspace.");
+    return;
+  }
+}
+
+document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => setView(item.dataset.view)));
+document.querySelectorAll(".brand").forEach((item) => item.addEventListener("click", (event) => { event.preventDefault(); setView("dashboard"); }));
+document.querySelector(".help-card button").addEventListener("click", () => setView("topics"));
+document.getElementById("closeModal").addEventListener("click", closeModal);
+document.getElementById("workspaceSwitcher").addEventListener("click", openWorkspaceModal);
+document.getElementById("signOutButton").addEventListener("click", () => handleAction("sign-out"));
+document.querySelector(".top-avatar").addEventListener("click", () => setView("settings"));
+document.querySelector(".notification-button").addEventListener("click", () => showToast("You're all caught up in this prototype workspace."));
+modalBackdrop.addEventListener("click", (event) => { if (event.target === modalBackdrop) closeModal(); });
+document.getElementById("mobileMenu").addEventListener("click", () => sidebar.classList.toggle("open"));
+document.getElementById("globalSearch").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    state.search = event.target.value;
+    setView("published");
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    document.getElementById("globalSearch").focus();
+  }
+  if (event.key === "Escape") closeModal();
+});
+
+if (restoreState()) showProduct();
+else showPublic();

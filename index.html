@@ -35,6 +35,12 @@
       <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></symbol>
     </svg>
 
+    <div id="devPortNotice" class="dev-port-notice" hidden>
+      <div class="dev-port-notice-inner">
+        <span>⚠️ <strong>Live Server (port 5500) detected.</strong> RankForge AI requires the local Node server. Run <code>npm start</code> in your terminal and open <a href="http://localhost:4000">http://localhost:4000</a>.</span>
+        <button id="devNoticeDismiss" class="notice-dismiss-btn" type="button" aria-label="Dismiss">✕</button>
+      </div>
+    </div>
     <div id="publicSite"></div>
     <div id="authGate" hidden></div>
     <div class="app-shell" id="productApp" hidden>
@@ -54,7 +60,7 @@
           <button class="nav-item" data-view="review"><svg><use href="#i-file"/></svg><span>Content review</span><span class="nav-count hot">8</span></button>
           <button class="nav-item" data-view="published"><svg><use href="#i-send"/></svg><span>Published pages</span></button>
           <button class="nav-item" data-view="clients"><svg><use href="#i-grid"/></svg><span>Client workspaces</span><span class="nav-count">3</span></button>
-          <button class="nav-item disabled" data-view="analytics" aria-disabled="true"><svg><use href="#i-chart"/></svg><span>Analytics</span><span class="soon">V1</span></button>
+          <button class="nav-item" data-view="analytics"><svg><use href="#i-chart"/></svg><span>Analytics</span></button>
         </nav>
         <div class="nav-label nav-label-spaced">MANAGE</div>
         <nav class="main-nav" aria-label="Workspace management">
@@ -88,7 +94,7 @@
           </div>
         </header>
         <div class="page-content" id="appMain"></div>
-        <footer class="app-footer"><span>RankForge AI <span class="footer-dot">·</span> Industrial content, engineered.</span><span>Prototype workspace <span class="footer-dot">·</span> Sample data</span></footer>
+        <footer class="app-footer"><span>RankForge AI <span class="footer-dot">·</span> Industrial content, engineered.</span><span>Workspace data and permissions are server-backed</span></footer>
       </main>
     </div>
     <div class="modal-backdrop" id="modalBackdrop" hidden>

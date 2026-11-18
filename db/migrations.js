@@ -18,6 +18,16 @@ const MIGRATIONS = [
       );
       await client.query(migration);
     }
+  },
+  {
+    version: "003_seo_workflow",
+    apply: async (client) => {
+      const migration = fs.readFileSync(
+        path.join(__dirname, "migrations", "003_seo_workflow.sql"),
+        "utf8"
+      );
+      await client.query(migration);
+    }
   }
 ];
 

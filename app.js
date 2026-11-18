@@ -12,9 +12,60 @@ const storageKey = "rankforge-ai-demo";
 const legacyStorageKey = "forgeflow-demo";
 let csrfToken = null;
 
+function getApiBaseUrl() {
+  const host = window.location.hostname || "localhost";
+  const port = window.location.port;
+  // If running via Live Server (5500, 5501, 5502) or other static server or file://, target the local Express backend on port 4000
+  if (port === "5500" || port === "5501" || port === "5502" || port === "8080" || !window.location.host) {
+    return `http://${host}:4000/api`;
+  }
+  return "/api";
+}
+const apiBase = getApiBaseUrl();
+
+async function safeParseJson(response) {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  let text = "";
+  try {
+    text = await response.text();
+  } catch {
+    text = "";
+  }
+  if (contentType.includes("application/json") || text.startsWith("{") || text.startsWith("[")) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      // Fall through to descriptive error below
+    }
+  }
+  const isStaticDev = window.location.port === "5500" || window.location.port === "5501" || window.location.port === "5502";
+  if (text.startsWith("<!DOCTYPE") || text.includes("<html") || response.status === 404) {
+    if (isStaticDev) {
+      throw new Error("Connected to static preview instead of the backend. Please run 'npm start' in your terminal and open http://localhost:4000.");
+    }
+    throw new Error("Backend API endpoint not found (HTTP 404). Ensure the server is running on http://localhost:4000.");
+  }
+  if (response.status >= 500) {
+    throw new Error(`Server error (${response.status}). Please check backend console logs.`);
+  }
+  throw new Error(`Unexpected server response (HTTP ${response.status || "offline"}). Please verify backend is running on http://localhost:4000.`);
+}
+
+async function fetchSafe(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (networkError) {
+    const isStaticDev = window.location.port === "5500" || window.location.port === "5501" || window.location.port === "5502";
+    if (isStaticDev) {
+      throw new Error("Cannot connect to backend at http://localhost:4000. Start the server by running 'npm start' in your terminal, then try again.");
+    }
+    throw new Error("Cannot connect to the backend server. Make sure it is running ('npm start').");
+  }
+}
+
 async function loadCsrfToken() {
-  const response = await fetch("/api/csrf", { credentials: "same-origin", cache: "no-store" });
-  const result = await response.json();
+  const response = await fetchSafe(`${apiBase}/csrf`, { credentials: "include", cache: "no-store" });
+  const result = await safeParseJson(response);
   if (!response.ok) throw new Error(result.error || "Could not start a secure session.");
   csrfToken = result.csrfToken;
 }
@@ -27,15 +78,19 @@ async function apiRequest(path, options = {}) {
     if (!csrfToken) await loadCsrfToken();
     headers["X-CSRF-Token"] = csrfToken;
   }
-  const response = await fetch(`/api${path}`, {
+  const response = await fetchSafe(`${apiBase}${path}`, {
     method,
-    credentials: "same-origin",
+    credentials: "include",
     cache: "no-store",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
   if (response.status === 204) return null;
-  const result = await response.json();
+  const result = await safeParseJson(response);
+  if (response.status === 403 && result.error && result.error.includes("Request could not be verified") && !options._retried) {
+    await loadCsrfToken();
+    return apiRequest(path, { ...options, _retried: true });
+  }
   if (!response.ok) {
     const error = new Error(result.error || "The request could not be completed.");
     error.status = response.status;
@@ -101,6 +156,10 @@ const state = {
   activeDraftId: null,
   billingPlans: [],
   billingStatus: null,
+  usage: null,
+  contentSettings: null,
+  integrations: null,
+  analytics: [],
   verticals: [
     { name: "Automotive", icon: "🚘", count: "Explore topics", desc: "Stamping, paint & weld defects, warranty analytics, IATF and APQP." },
     { name: "Steel", icon: "🏭", count: "Explore topics", desc: "EAF energy, continuous casting quality and predictive maintenance." },
@@ -198,6 +257,10 @@ function loadWorkspaceData(workspaceId) {
     state.activeDraftId = null;
     state.billingPlans = [];
     state.billingStatus = null;
+    state.usage = null;
+    state.contentSettings = null;
+    state.integrations = null;
+    state.analytics = [];
     state.members = [{ name: state.user ? state.user.name : "Workspace owner", email: state.user ? state.user.email : "", role: "Owner", status: "Active" }];
     state.clients = [];
     return;
@@ -223,6 +286,10 @@ function activateWorkspace(workspace) {
     state.activeDraftId = null;
     state.billingPlans = [];
     state.billingStatus = null;
+    state.usage = null;
+    state.contentSettings = null;
+    state.integrations = null;
+    state.analytics = [];
     state.members = [];
     state.clients = [];
   }
@@ -236,6 +303,27 @@ async function refreshWorkspaceContent(workspaceId = state.activeWorkspaceId) {
   state.topics = result.topics;
   state.drafts = result.drafts;
   state.feedback = result.feedback;
+  state.usage = result.usage;
+  state.batches = result.batches.map((batch) => {
+    const statuses = {
+      pending_approval: "In review",
+      approved: "Approved",
+      generating: "Generating",
+      ready: "Ready",
+      completed: "Completed"
+    };
+    const progress = batch.topicCount ? Math.round((batch.draftCount / batch.topicCount) * 100) : 0;
+    return {
+      ...batch,
+      rawStatus: batch.status,
+      status: statuses[batch.status] || batch.status,
+      detail: `${batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : "New"} · ${batch.topicCount} topics · ${batch.draftCount} pages`,
+      initials: batch.vertical.slice(0, 2).toUpperCase(),
+      className: "",
+      progress,
+      date: batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""
+    };
+  });
   if (!state.drafts.some((draft) => draft.id === state.activeDraftId)) {
     state.activeDraftId = state.drafts[0] ? state.drafts[0].id : null;
   }
@@ -250,9 +338,38 @@ async function refreshWorkspaceContent(workspaceId = state.activeWorkspaceId) {
       title: draft.title,
       batch: "",
       date: draft.reviewedAt ? new Date(draft.reviewedAt).toLocaleDateString() : "",
-      status: "Approved",
-      schema: "Article"
+      status: draft.publishedUrl ? "Published" : "Approved",
+      publishedUrl: draft.publishedUrl || "",
+      schema: "Article · FAQPage"
     }));
+}
+
+async function loadWorkspaceSettings() {
+  const workspaceId = state.activeWorkspaceId;
+  try {
+    const [contentSettings, integrations] = await Promise.all([
+      apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/content-settings`),
+      apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/integrations`)
+    ]);
+    if (state.activeWorkspaceId !== workspaceId || state.view !== "settings") return;
+    state.contentSettings = contentSettings;
+    state.integrations = integrations;
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function loadAnalytics() {
+  const workspaceId = state.activeWorkspaceId;
+  try {
+    const result = await apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/analytics`);
+    if (state.activeWorkspaceId !== workspaceId || state.view !== "analytics") return;
+    state.analytics = result.pages;
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 function restoreState() {
@@ -339,7 +456,55 @@ function renderPublicSite() {
       <section class="pricing-section" id="pricingSection"><div class="section-intro centered"><span class="hero-kicker">A CLEAR STARTING POINT</span><h2>Plans that grow with your workflow.</h2><p>Indicative launch pricing from the project brief. Confirm final limits and terms before accepting payment.</p></div><div class="pricing-grid"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><p>Build and review your first industrial content batches.</p><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Workspace topics and drafts</li><li>${icon("check")} Workspace settings and URLs</li><li>${icon("check")} Industrial topic library</li><li>${icon("check")} Review &amp; HTML export</li></ul><button class="button" data-public-action="signup">Create a workspace ${icon("arrow")}</button></article><article class="pricing-card featured"><span class="pricing-popular">GROWING TEAMS</span><span class="pricing-name">GROWTH</span><h3>For a scaling content operation</h3><p>Coordinate a higher volume of pages across more sites.</p><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Team review workflow</li><li>${icon("check")} Workspace topics and drafts</li><li>${icon("check")} Shared team review</li><li>${icon("check")} Analytics planned for V1</li></ul><button class="button primary" data-public-action="signup">Get started ${icon("arrow")}</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client teams</h3><p>Keep client projects organized with a setup designed for agencies.</p><div class="price custom-price">Let's talk</div><ul><li>${icon("check")} Separate client workspaces</li><li>${icon("check")} Workspace role controls</li><li>${icon("check")} White-label planned for V1</li><li>${icon("check")} Limits to be confirmed</li></ul><button class="button" data-public-action="signup">Talk to our team ${icon("arrow")}</button></article></div><p class="pricing-note">Prices and included features are illustrative. Workspace Plan & usage shows configured Stripe prices; quotas and entitlements require validation before launch.</p></section>
       <section class="final-cta"><div><span class="hero-kicker">READY TO GET ORGANIZED?</span><h2>Give your industrial content<br/>a better production system.</h2><p>Create a workspace, set your context, and invite the people who move pages forward.</p></div><button class="button primary hero-button" data-public-action="signup">Create your workspace ${icon("arrow")}</button></section>
     </main>
-    <footer class="marketing-footer"><a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a><span>Industrial content, engineered.</span><span>Server-backed workspace content; AI generation and publishing are not connected · Prototype content</span></footer>`;
+    <footer class="marketing-footer">
+      <div class="marketing-footer-top">
+        <div class="marketing-footer-brand">
+          <a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a>
+          <p class="marketing-footer-tagline">Industrial content engine for manufacturing and technical B2B companies. Pre-built vertical taxonomies, closed-loop rule QA, and automated schema.</p>
+        </div>
+        <div class="marketing-footer-cols">
+          <div class="footer-col">
+            <h4>Workflow</h4>
+            <a href="#platform" data-scroll="#platform">Vertical Taxonomy</a>
+            <a href="#workflow" data-scroll="#workflow">Topic Batches</a>
+            <a href="#workflow" data-scroll="#workflow">AI Generation</a>
+            <a href="#pricingSection" data-scroll="#pricingSection">Plans &amp; Pricing</a>
+          </div>
+          <div class="footer-col">
+            <h4>Verticals</h4>
+            <span>Automotive</span>
+            <span>Steel &amp; Metals</span>
+            <span>Food &amp; Beverage</span>
+            <span>HVAC &amp; Cleanrooms</span>
+            <span>Chemical &amp; Materials</span>
+          </div>
+          <div class="footer-col">
+            <h4>Platform</h4>
+            <button class="footer-link-btn" data-public-action="login">Log in</button>
+            <button class="footer-link-btn" data-public-action="signup">Create workspace</button>
+            <button class="footer-link-btn" data-public-action="demo">Explore sample</button>
+          </div>
+        </div>
+      </div>
+      <div class="marketing-footer-bottom">
+        <span>© 2026 RankForge AI <span class="footer-dot">·</span> Industrial content, engineered.</span>
+        <span>PostgreSQL server-backed storage <span class="footer-dot">·</span> End-to-end 8-step workflow</span>
+      </div>
+    </footer>`;
+}
+
+function renderAuthFooter() {
+  return `
+    <footer class="auth-footer">
+      <div class="auth-footer-brand">
+        <span>RankForge AI <span class="footer-dot">·</span> Industrial SEO &amp; Content Engine</span>
+      </div>
+      <div class="auth-footer-links">
+        <button class="footer-link-btn" data-back-public>← Back to Home</button>
+        <button class="footer-link-btn" data-auth-action="demo">Explore sample workspace</button>
+        <span>Server-backed workspace · Port 4000</span>
+      </div>
+    </footer>`;
 }
 
 function showAuth(mode = "signup") {
@@ -388,7 +553,7 @@ function renderAuth(mode) {
             <input id="authPassword" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" minlength="${isSignup ? "12" : "1"}" maxlength="128" required />
             ${isSignup ? `<small>Use at least 12 characters.</small>` : ""}
           </div>
-          ${isSignup ? `<div class="settings-field"><label for="authCompany">Company / workspace name</label><input id="authCompany" autocomplete="organization" placeholder="e.g. Northstar Manufacturing" required /></div><div class="settings-field"><label for="authIndustry">Industry</label><select id="authIndustry">${state.verticals.map((v) => `<option>${escapeHtml(v.name)}</option>`).join("")}<option>Other industrial / technical</option></select></div>` : ""}
+          ${isSignup ? `<div class="settings-field"><label for="authCompany">Company / workspace name</label><input id="authCompany" autocomplete="organization" placeholder="e.g. Northstar Manufacturing" required /></div><div class="settings-field"><label for="authWebsite">Website</label><input id="authWebsite" type="url" placeholder="https://northstarmanufacturing.com" /></div><div class="settings-field"><label for="authIndustry">Industry</label><select id="authIndustry">${state.verticals.map((v) => `<option>${escapeHtml(v.name)}</option>`).join("")}<option>Other industrial / technical</option></select></div>` : ""}
           <button class="button primary auth-submit" data-auth-action="${isSignup ? "signup" : "login"}">${isSignup ? "Create workspace" : "Continue"} ${icon("arrow")}</button>
           ${!isSignup ? `<button class="text-button" data-auth-action="forgot-password">Forgot password?</button><button class="text-button" data-auth-action="resend-verification">Resend verification email</button>` : ""}
           <div class="auth-divider"><span>OR</span></div>
@@ -396,6 +561,7 @@ function renderAuth(mode) {
           <small class="auth-disclaimer">${sessionStorage.getItem("rankforge-pending-invitation") ? "Sign in using the invited email address to accept the workspace invitation." : "Email verification and password recovery links are sent to the address on your account."}</small>
         </section>
       </div>
+      ${renderAuthFooter()}
     </div>`;
 }
 
@@ -449,10 +615,11 @@ async function handleAuth(action, invitationToken) {
     if (action === "signup") {
       const name = document.getElementById("authName").value.trim();
       const workspaceName = document.getElementById("authCompany").value.trim();
+      const website = document.getElementById("authWebsite").value.trim();
       const industry = document.getElementById("authIndustry").value;
       const result = await apiRequest("/auth/register", {
         method: "POST",
-        body: { name, email, password, workspaceName, industry }
+        body: { name, email, password, workspaceName, industry, website }
       });
       showAuth("login");
       document.getElementById("authEmail").value = email;
@@ -494,7 +661,7 @@ function showEmailVerification(token) {
   publicSite.hidden = true;
   productApp.hidden = true;
   authGate.hidden = false;
-  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT VERIFICATION</span><h2>Verify your email address</h2><p>Confirm that you control this address to activate the account and its workspace.</p><div class="auth-error" id="authError" hidden></div><button class="button primary auth-submit" id="verifyEmailButton">Verify email</button></section></div></div>`;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT VERIFICATION</span><h2>Verify your email address</h2><p>Confirm that you control this address to activate the account and its workspace.</p><div class="auth-error" id="authError" hidden></div><button class="button primary auth-submit" id="verifyEmailButton">Verify email</button></section></div>${renderAuthFooter()}</div>`;
   authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
   document.getElementById("verifyEmailButton").addEventListener("click", async () => {
     const error = document.getElementById("authError");
@@ -515,7 +682,7 @@ function showPasswordReset(token) {
   publicSite.hidden = true;
   productApp.hidden = true;
   authGate.hidden = false;
-  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT RECOVERY</span><h2>Choose a new password</h2><p>Use at least 12 characters. Reset links can only be used once.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="resetPassword">New password</label><input id="resetPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /></div><button class="button primary auth-submit" id="resetPasswordButton">Update password</button></section></div></div>`;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT RECOVERY</span><h2>Choose a new password</h2><p>Use at least 12 characters. Reset links can only be used once.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="resetPassword">New password</label><input id="resetPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /></div><button class="button primary auth-submit" id="resetPasswordButton">Update password</button></section></div>${renderAuthFooter()}</div>`;
   authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
   document.getElementById("resetPasswordButton").addEventListener("click", async () => {
     const error = document.getElementById("authError");
@@ -535,7 +702,7 @@ function showInvitationSignup(token) {
   publicSite.hidden = true;
   productApp.hidden = true;
   authGate.hidden = false;
-  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">WORKSPACE INVITATION</span><h2>Join your team</h2><p>Enter the invited email address to create an account and accept this workspace invitation.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" required /></div><div class="settings-field"><label for="authEmail">Invited email</label><input id="authEmail" type="email" autocomplete="email" required /></div><div class="settings-field"><label for="authPassword">Create password</label><input id="authPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /><small>Use at least 12 characters.</small></div><button class="button primary auth-submit" data-auth-action="register-invitation">Create account and join</button><button class="text-button" data-auth-mode="login">Already have an account? Sign in</button></section></div></div>`;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">WORKSPACE INVITATION</span><h2>Join your team</h2><p>Enter the invited email address to create an account and accept this workspace invitation.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" required /></div><div class="settings-field"><label for="authEmail">Invited email</label><input id="authEmail" type="email" autocomplete="email" required /></div><div class="settings-field"><label for="authPassword">Create password</label><input id="authPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /><small>Use at least 12 characters.</small></div><button class="button primary auth-submit" data-auth-action="register-invitation">Create account and join</button><button class="text-button" data-auth-mode="login">Already have an account? Sign in</button></section></div>${renderAuthFooter()}</div>`;
   authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
   authGate.querySelectorAll("[data-auth-action]").forEach((button) => button.addEventListener("click", () => handleAuth(button.dataset.authAction, token)));
   authGate.querySelectorAll("[data-auth-mode]").forEach((button) => button.addEventListener("click", () => showAuth(button.dataset.authMode)));
@@ -629,17 +796,15 @@ const statusClass = (status) => {
 const chip = (status) => `<span class="status-chip ${statusClass(status)}"><i class="status-dot"></i>${status}</span>`;
 
 function setView(view) {
-  if (view === "analytics") {
-    showToast("Analytics is planned for V1 and is not included in this MVP prototype.");
-    return;
-  }
   state.view = view;
   sidebar.classList.remove("open");
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
-  const labels = { dashboard: "Overview", topics: "Topics & batches", review: "Content review", published: "Published pages", settings: "Settings" };
+  const labels = { dashboard: "Overview", topics: "Topics & batches", review: "Content review", published: "Published pages", settings: "Settings", analytics: "Analytics" };
   Object.assign(labels, { clients: "Client workspaces", team: "Team & access", plans: "Plan & usage" });
   breadcrumb.textContent = labels[view] || "Overview";
   render();
+  if (view === "settings" && state.user && !state.user.demo) loadWorkspaceSettings();
+  if (view === "analytics" && state.user && !state.user.demo) loadAnalytics();
   if (view === "team" && state.user && !state.user.demo) refreshWorkspaceMembers();
   if (view === "plans" && state.user && !state.user.demo) {
     const workspaceId = state.activeWorkspaceId;
@@ -656,7 +821,7 @@ function setView(view) {
 }
 
 function render() {
-  const views = { dashboard: renderDashboard, topics: renderTopics, review: renderReview, published: renderPublished, settings: renderSettings, clients: renderClients, team: renderTeam, plans: renderPlans };
+  const views = { dashboard: renderDashboard, topics: renderTopics, review: renderReview, published: renderPublished, settings: renderSettings, analytics: renderAnalytics, clients: renderClients, team: renderTeam, plans: renderPlans };
   appMain.innerHTML = (views[state.view] || renderDashboard)();
   bindPageEvents();
 }
@@ -744,6 +909,7 @@ function renderDashboard() {
 }
 
 function renderTopics() {
+  if (state.user && !state.user.demo) return renderPersistedTopics();
   const filtered = state.topics.filter((topic) => {
     const matchesTab = state.topicFilter === "All topics" || topic.status === state.topicFilter;
     const searchTerm = state.search.toLowerCase();
@@ -790,11 +956,50 @@ function renderTopics() {
     </div>`;
 }
 
+function renderPersistedTopics() {
+    const canApprove = currentWorkspace() && ["Owner", "Admin"].includes(currentWorkspace().role);
+    const canGenerate = currentWorkspace() && ["Owner", "Admin", "Editor"].includes(currentWorkspace().role);
+    const filtered = state.topics.filter((topic) => {
+      const matchesTab = state.topicFilter === "All topics" || topic.status === state.topicFilter;
+      const matchesSearch = !state.search || `${topic.title} ${topic.vertical} ${topic.equipment} ${topic.pain}`.toLowerCase().includes(state.search.toLowerCase());
+      return matchesTab && matchesSearch;
+    });
+    const tabs = ["All topics", "Suggested", "In review", "Approved"];
+    const usage = state.usage || { plan: currentWorkspace().plan || "Starter", subscriptionStatus: "inactive", used: 0, limit: 0 };
+    return `
+      <div class="page-heading"><div><div class="eyebrow">WORKSPACE CONTENT</div><h1>Topics &amp; batches</h1><p class="page-subtitle">Create a topic batch, review and approve its suggestions, then generate pages.</p></div><div class="heading-actions"><button class="button" data-action="add-topic">${icon("plus")} Add a topic</button>${canGenerate ? `<button class="button primary" data-action="suggest-batch">${icon("spark")} Suggest topic batch</button>` : ""}</div></div>
+      <section class="panel" style="margin-bottom:16px"><div class="panel-heading"><div><h2>AI page allowance</h2><p>${escapeHtml(usage.plan)} plan · ${usage.used} of ${usage.limit} pages used this month</p></div>${chip(usage.subscriptionStatus === "active" || usage.subscriptionStatus === "trialing" ? "Active" : "Inactive")}</div>${!["active", "trialing"].includes(usage.subscriptionStatus) ? `<div class="onboarding-data-note">Activate a Starter or Growth subscription before generating pages. Topic planning and human review remain available.</div>` : ""}</section>
+      ${state.batches.length ? `<section class="panel topics-batch-section"><div class="panel-heading"><div><h2>Content batches</h2><p>Approve topic suggestions before generating pages.</p></div><span class="phase-chip">${state.batches.length} batches</span></div><div class="batch-list">${state.batches.map((batch) => `
+        <div class="batch-row batch-row-workflow">
+          <div class="batch-title"><span class="batch-avatar">${escapeHtml(batch.initials)}</span><div class="batch-title-copy"><strong>${escapeHtml(batch.name)}</strong><small>${escapeHtml(batch.detail)}</small></div></div>
+          <div class="progress-wrap"><div class="progress-label"><span>Pages generated</span><span>${batch.progress}%</span></div><div class="progress-track"><span style="width:${batch.progress}%"></span></div></div>
+          ${chip(batch.status)}
+          <div class="batch-actions">${batch.rawStatus === "pending_approval" && canApprove ? `<button class="button small" data-action="reject-batch" data-batch-id="${escapeHtml(batch.id)}">Reject</button><button class="button small primary" data-action="approve-batch" data-batch-id="${escapeHtml(batch.id)}">Approve topics</button>` : ""}${batch.rawStatus === "approved" && canGenerate ? `<button class="button small primary" data-action="generate-batch" data-batch-id="${escapeHtml(batch.id)}">Generate pages</button>` : ""}${batch.rawStatus === "ready" ? `<button class="button small" data-action="open-review">Review drafts</button>` : ""}</div>
+        </div>`).join("")}</div></section>` : `<section class="panel empty-client-state"><span class="empty-art">${icon("layers")}</span><h2>No content batches yet.</h2><p>Generate topic suggestions to start your first production batch.</p>${canGenerate ? `<button class="button primary" data-action="suggest-batch">${icon("spark")} Suggest topic batch</button>` : ""}</section>`}
+      <section class="panel topic-main">
+        <div class="panel-heading"><div><h2>Workspace topics</h2><p>Suggestions remain in review until an owner or admin approves the batch.</p></div><span class="phase-chip">${state.topics.length} topics</span></div>
+        <div class="filter-tabs">${tabs.map((tab) => `<button class="filter-tab ${state.topicFilter === tab ? "active" : ""}" data-filter="${escapeHtml(tab)}">${escapeHtml(tab)}</button>`).join("")}</div>
+        <div class="topic-toolbar" style="padding:12px 14px 0"><label class="search-box">${icon("search")}<input id="topicSearch" type="search" placeholder="Search equipment, pain points..." value="${escapeHtml(state.search)}" /></label></div>
+        <div class="table-wrap"><table class="topic-table"><thead><tr><th>TOPIC IDEA</th><th>EQUIPMENT</th><th>CONTENT TYPE</th><th>STATUS</th><th></th></tr></thead><tbody>${filtered.length ? filtered.map((topic) => `<tr><td>${escapeHtml(topic.title)}<div style="font-size:8px;color:#9aa39d;font-weight:400;margin-top:4px">${escapeHtml(topic.vertical)} · ${escapeHtml(topic.pain)}</div></td><td>${escapeHtml(topic.equipment)}</td><td><span class="topic-label">${escapeHtml(topic.type)}</span></td><td>${chip(topic.status)}</td><td>${canGenerate && topic.status !== "Approved" ? `<button class="row-action" data-action="delete-topic" data-topic-id="${escapeHtml(topic.id)}" aria-label="Delete topic">×</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="5"><div class="empty-state">No topics match this filter. Try another search or status.</div></td></tr>`}</tbody></table></div>
+      </section>
+      <div class="roadmap-banner">${icon("check")} <span>Generated pages are checked for structure and SEO metadata, then require a human review before publishing.</span></div>`;
+}
+
 function renderNewWorkspaceDashboard() {
   const workspace = currentWorkspace();
-  return `<div class="page-heading"><div><div class="eyebrow">YOUR WORKSPACE <span class="demo-chip">SETUP</span></div><h1>Welcome to RankForge AI, ${escapeHtml(state.user ? state.user.name.split(" ")[0] : "there")}.</h1><p class="page-subtitle">Your ${escapeHtml(workspace ? workspace.industry : "industrial")} workspace is ready. Add your team and start a first batch.</p></div><div class="heading-actions"><button class="button primary" data-action="new-batch">${icon("plus")} Create first batch</button></div></div>
-    <div class="onboarding-progress"><div class="onboarding-progress-head"><div><span class="hero-kicker">WORKSPACE SETUP</span><h2>A few small steps to get your team moving.</h2></div><span>1 of 3 complete</span></div><div class="onboarding-track"><i style="width:33%"></i></div><div class="onboarding-steps"><button class="onboarding-step done" data-view="settings"><i>${icon("check")}</i><span><b>Workspace created</b><small>${escapeHtml(workspace ? workspace.name : "")}</small></span><em>Complete</em></button><button class="onboarding-step" data-view="team"><i>2</i><span><b>Invite your collaborators</b><small>Give writers and reviewers the right level of access.</small></span><em>Set up</em></button><button class="onboarding-step" data-view="topics"><i>3</i><span><b>Choose your first topics</b><small>Start with the pre-built industry taxonomy.</small></span><em>Set up</em></button></div></div>
-    <div class="dashboard-grid" style="margin-top:16px"><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Start with your team's expertise</h2><p>Configure this workspace before generating content.</p></div><span class="phase-chip">MVP WORKSPACE</span></div><div class="onboarding-feature-list"><div class="onboarding-feature">${icon("layers")}<span><b>Browse industrial topics</b><small>Equipment, pain points, and content types in one library.</small></span><button class="text-button" data-view="topics">Explore ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("grid")}<span><b>Invite teammates</b><small>Give writers and reviewers the right level of access.</small></span><button class="text-button" data-view="team">Manage team ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("settings")}<span><b>Set your review guardrails</b><small>Brand context, approved links, and QA rules.</small></span><button class="text-button" data-view="settings">Configure ${icon("arrow")}</button></div></div></section><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Designed for real collaboration</h2><p>Your workspace starts private to you.</p></div></div><div class="onboarding-security">${icon("grid")}<b>One workspace for your organization</b><p>Keep projects together, then add accounts with the access they need.</p><div class="onboarding-data-note">Topics, drafts, review history, and settings are not stored on the server yet. Do not enter sensitive customer content.</div></div></section></div>`;
+  const pending = state.drafts.filter((draft) => draft.status === "In review").length;
+  const approved = state.drafts.filter((draft) => draft.status === "Approved").length;
+  const usage = state.usage || { plan: workspace && workspace.plan || "Starter", subscriptionStatus: "inactive", used: 0, limit: 0 };
+  const recentBatches = state.batches.slice(0, 4);
+  return `<div class="page-heading"><div><div class="eyebrow">YOUR WORKSPACE</div><h1>Welcome, ${escapeHtml(state.user ? state.user.name.split(" ")[0] : "there")}.</h1><p class="page-subtitle">Your content workflow is ready for ${escapeHtml(workspace ? workspace.name : "your team")}.</p></div><div class="heading-actions"><button class="button" data-view="settings">Workspace settings</button><button class="button primary" data-action="suggest-batch">${icon("spark")} Suggest a topic batch</button></div></div>
+    <section class="metric-grid" aria-label="Workspace summary">
+      <article class="metric-card"><div class="metric-top"><span>Content batches</span><i class="metric-icon">${icon("layers")}</i></div><div class="metric-value">${state.batches.length}</div><div class="metric-foot">Stored in this workspace</div></article>
+      <article class="metric-card"><div class="metric-top"><span>Pages awaiting review</span><i class="metric-icon">${icon("file")}</i></div><div class="metric-value">${pending}</div><div class="metric-foot">Human approval required</div></article>
+      <article class="metric-card"><div class="metric-top"><span>Pages approved</span><i class="metric-icon">${icon("check")}</i></div><div class="metric-value">${approved}</div><div class="metric-foot">Ready for publishing or export</div></article>
+      <article class="metric-card"><div class="metric-top"><span>Monthly AI usage</span><i class="metric-icon">${icon("chart")}</i></div><div class="metric-value">${usage.used} <span style="font-size:13px;color:#87938a;font-weight:500">/ ${usage.limit || "—"}</span></div><div class="metric-foot">${escapeHtml(usage.plan)} plan · ${escapeHtml(usage.subscriptionStatus)}</div></article>
+    </section>
+    <div class="dashboard-grid"><section class="panel"><div class="panel-heading"><div><h2>Recent batches</h2><p>Move topics from approval to reviewed pages.</p></div><button class="text-button" data-view="topics">View batches ${icon("arrow")}</button></div>${recentBatches.length ? `<div class="batch-list">${recentBatches.map((batch) => `<div class="batch-row"><div class="batch-title"><span class="batch-avatar">${escapeHtml(batch.initials)}</span><div class="batch-title-copy"><strong>${escapeHtml(batch.name)}</strong><small>${escapeHtml(batch.detail)}</small></div></div><div class="progress-wrap"><div class="progress-label"><span>Progress</span><span>${batch.progress}%</span></div><div class="progress-track"><span style="width:${batch.progress}%"></span></div></div>${chip(batch.status)}<span class="batch-date">${escapeHtml(batch.date)}</span></div>`).join("")}</div>` : `<div class="empty-state">No batches have been created yet. Suggest topics to get started.</div>`}</section>
+      <section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Set up your workflow</h2><p>Prepare the workspace before content generation.</p></div></div><div class="onboarding-feature-list"><div class="onboarding-feature">${icon("settings")}<span><b>Configure product context</b><small>Set approved CTA and page quality thresholds.</small></span><button class="text-button" data-view="settings">Configure ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("grid")}<span><b>Invite reviewers</b><small>Give writers and approvers workspace access.</small></span><button class="text-button" data-view="team">Manage team ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("send")}<span><b>Connect publishing</b><small>Configure WordPress and Google reporting.</small></span><button class="text-button" data-view="settings">Connect ${icon("arrow")}</button></div></div></section></div>`;
 }
 
 function renderClients() {
@@ -908,19 +1113,21 @@ function renderReview() {
 
 function renderPersistedReview() {
   const draft = currentDraft();
-  if (!draft) return `<div class="page-heading"><div><div class="eyebrow">HUMAN APPROVAL</div><h1>Content review</h1><p class="page-subtitle">Drafts and review decisions are stored in your workspace.</p></div><div class="heading-actions"><button class="button primary" data-action="new-draft">${icon("plus")} New draft</button></div></div><div class="panel empty-client-state"><span class="empty-art">${icon("file")}</span><h2>No drafts yet.</h2><p>Create a manual draft, or select topics to create draft records.</p><button class="button" data-view="topics">Explore topics ${icon("arrow")}</button></div>`;
+  if (!draft) return `<div class="page-heading"><div><div class="eyebrow">HUMAN APPROVAL</div><h1>Content review</h1><p class="page-subtitle">Generated and manually prepared drafts follow the same quality and review gates.</p></div><div class="heading-actions"><button class="button primary" data-action="new-draft">${icon("plus")} New draft</button></div></div><div class="panel empty-client-state"><span class="empty-art">${icon("file")}</span><h2>No drafts yet.</h2><p>Generate pages from an approved topic batch or create a manual draft.</p><button class="button" data-view="topics">Explore topics ${icon("arrow")}</button></div>`;
   const role = currentWorkspace() && currentWorkspace().role;
   const canEdit = ["Owner", "Admin", "Editor"].includes(role);
   const canReview = ["Owner", "Admin", "Reviewer"].includes(role);
   const editable = canEdit && ["Draft", "Changes requested"].includes(draft.status);
   const reviewable = canReview && draft.status === "In review";
   const history = state.feedback.filter((entry) => entry.draft_id === draft.id);
+  const checks = draft.qualityReport && Array.isArray(draft.qualityReport.checks) ? draft.qualityReport.checks : [];
   return `<div class="page-heading"><div><div class="eyebrow">WORKSPACE DRAFTS</div><h1>Review and edit</h1></div><div class="heading-actions"><select id="draftSelector" aria-label="Choose a draft">${state.drafts.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === draft.id ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(item.status)}</option>`).join("")}</select><button class="button" data-action="new-draft">${icon("plus")} New draft</button></div></div><div class="review-wrap">
     <div class="review-page-heading"><div class="review-title-group"><button class="back-button" data-view="topics" aria-label="Back to topics">${icon("arrow")}</button><div><div class="eyebrow">WORKSPACE DRAFT</div><h1>${escapeHtml(draft.title)}</h1><div class="review-meta">Version ${draft.version} <span>·</span> ${chip(draft.status)}</div></div></div>
-      <div class="review-actions">${editable ? `<button class="button" data-action="save-draft">Save draft</button><button class="button primary" data-action="submit-for-review">${icon("check")} Submit for review</button>` : ""}${reviewable ? `<button class="button" data-action="request-changes">Request changes</button><button class="button primary" data-action="approve">${icon("check")} Approve draft</button>` : ""}${draft.status === "Approved" ? `<button class="button" data-action="export-approved" data-draft-id="${escapeHtml(draft.id)}">Export HTML ${icon("arrow")}</button>` : ""}</div>
+      <div class="review-actions">${editable ? `<button class="button" data-action="save-draft">Save draft</button><button class="button" data-action="quality-check">Run quality check</button><button class="button" data-action="repair-draft">${icon("spark")} AI repair</button><button class="button primary" data-action="submit-for-review" ${draft.qualityReport && draft.qualityReport.passed ? "" : "disabled"}>${icon("check")} Submit for review</button>` : ""}${reviewable ? `<button class="button" data-action="request-changes">Request changes</button><button class="button primary" data-action="approve">${icon("check")} Approve draft</button>` : ""}${draft.status === "Approved" ? `<button class="button" data-action="export-approved" data-draft-id="${escapeHtml(draft.id)}">Export HTML ${icon("arrow")}</button><button class="button primary" data-action="publish-draft">${icon("send")} Publish to WordPress</button>` : ""}</div>
     </div>
+    <section class="panel quality-panel"><div class="panel-heading"><div><h2>Quality checks</h2><p>${draft.qualityCheckedAt ? `Checked ${escapeHtml(new Date(draft.qualityCheckedAt).toLocaleString())}` : "Run checks before submitting for human review."}</p></div>${draft.qualityReport ? chip(draft.qualityReport.passed ? "Ready" : "Needs attention") : chip("Not checked")}</div>${checks.length ? `<div class="quality-check-list">${checks.map((check) => `<div class="quality-check-row"><span class="quality-check-icon ${check.passed ? "passed" : "failed"}">${check.passed ? icon("check") : icon("close")}</span><span><b>${escapeHtml(check.label)}</b><small>${escapeHtml(check.detail)}</small></span></div>`).join("")}</div>` : `<div class="onboarding-data-note">Checks include minimum word count, page structure, FAQs, meta description, approved CTA, and structured data.</div>`}${draft.seoData && draft.seoData.metaDescription ? `<p class="meta-description"><b>Meta description:</b> ${escapeHtml(draft.seoData.metaDescription)}</p>` : ""}${draft.publishedUrl ? `<p class="meta-description">Published URL: <a href="${escapeHtml(draft.publishedUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(draft.publishedUrl)}</a></p>` : ""}</section>
     <div class="review-columns">
-      <section class="panel preview-card"><div class="preview-top"><span>${icon("external")} Draft preview</span><span>${escapeHtml(draft.status)}</span></div><article class="preview-document"><h2>${escapeHtml(draft.title)}</h2><p class="lead">${escapeHtml(draft.content || "No content has been added yet.")}</p></article></section>
+      <section class="panel preview-card"><div class="preview-top"><span>${icon("external")} Draft preview</span><span>${escapeHtml(draft.status)}</span></div><article class="preview-document"><h2>${escapeHtml(draft.title)}</h2><pre class="draft-preview-content">${escapeHtml(draft.content || "No content has been added yet.")}</pre></article></section>
       <section class="panel editor-card"><div class="editor-top"><span>${icon("file")} Persistent draft</span></div><div class="editor-content">
         <div class="editor-block"><div class="editor-section-label">Title</div><textarea class="editor-field title-field" data-draft-field="title" rows="2" ${editable ? "" : "disabled"}>${escapeHtml(draft.title)}</textarea></div>
         <div class="editor-block"><div class="editor-section-label">Content</div><textarea class="editor-field" data-draft-field="content" rows="18" maxlength="100000" ${editable ? "" : "disabled"}>${escapeHtml(draft.content)}</textarea></div>
@@ -955,16 +1162,17 @@ function renderPublished() {
   const demo = Boolean(state.user && state.user.demo);
   const pages = state.pages.filter((page) => !state.search || `${page.title} ${page.batch} ${page.schema}`.toLowerCase().includes(state.search.toLowerCase()));
   return `
-    <div class="page-heading"><div><div class="eyebrow">Content library ${demo ? `<span class="demo-chip">DEMO DATA</span>` : ""}</div><h1>${demo ? "Published pages" : "Approved drafts"}</h1><p class="page-subtitle">${demo ? "Sample pages for the interactive demo." : "Approved workspace drafts can be exported as HTML."}</p></div><div class="heading-actions">${demo ? `<button class="button" data-action="export-all">Export selected</button><button class="button primary" data-action="new-batch">${icon("plus")} New batch</button>` : ""}</div></div>
+    <div class="page-heading"><div><div class="eyebrow">Content library ${demo ? `<span class="demo-chip">DEMO DATA</span>` : ""}</div><h1>${demo ? "Published pages" : "Approved & published pages"}</h1><p class="page-subtitle">${demo ? "Sample pages for the interactive demo." : "Publish approved pages to WordPress or export them as HTML."}</p></div><div class="heading-actions">${demo ? `<button class="button" data-action="export-all">Export selected</button><button class="button primary" data-action="new-batch">${icon("plus")} New batch</button>` : ""}</div></div>
     <section class="panel published-panel">
       <div class="panel-heading"><div><h2>${demo ? "Sample page library" : "Approved workspace drafts"}</h2><p>${pages.length} ${demo ? "sample pages" : "approved drafts"}</p></div><div class="published-tools"><label class="search-box">${icon("search")}<input id="publishedSearch" type="search" placeholder="Search pages..." value="${escapeHtml(state.search)}" /></label></div></div>
       <div class="table-wrap"><table class="topic-table"><thead><tr><th>${demo ? `<input class="table-checkbox" type="checkbox" aria-label="Select all pages" />` : ""}</th><th>PAGE TITLE</th><th>BATCH</th><th>SCHEMA</th><th>STATUS</th><th>DATE</th><th></th></tr></thead>
-      <tbody>${pages.length ? pages.map((page, index) => `<tr><td>${demo ? `<input class="table-checkbox page-check" type="checkbox" data-index="${index}" aria-label="Select ${escapeHtml(page.title)}" />` : ""}</td><td><div class="page-title-cell"><span class="page-mini-icon">${icon("file")}</span>${escapeHtml(page.title)}</div></td><td>${escapeHtml(page.batch)}</td><td><span class="topic-label">${escapeHtml(page.schema)}</span></td><td>${chip(page.status)}</td><td>${escapeHtml(page.date)}</td><td><button class="row-action" data-action="${demo ? "export" : "export-approved"}" data-draft-id="${escapeHtml(page.id || "")}" aria-label="Export ${escapeHtml(page.title)}">Export ↓</button></td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state">${demo ? "No sample pages found for that search." : "No approved drafts found for that search."}</div></td></tr>`}</tbody></table></div>
+      <tbody>${pages.length ? pages.map((page, index) => `<tr><td>${demo ? `<input class="table-checkbox page-check" type="checkbox" data-index="${index}" aria-label="Select ${escapeHtml(page.title)}" />` : ""}</td><td><div class="page-title-cell"><span class="page-mini-icon">${icon("file")}</span>${escapeHtml(page.title)}</div></td><td>${escapeHtml(page.batch)}</td><td><span class="topic-label">${escapeHtml(page.schema)}</span></td><td>${chip(page.status)}</td><td>${escapeHtml(page.date)}</td><td>${demo ? `<button class="row-action" data-action="export">Export ↓</button>` : `${page.publishedUrl ? `<a class="row-action" href="${escapeHtml(page.publishedUrl)}" target="_blank" rel="noopener noreferrer">Open ↗</a>` : `<button class="row-action" data-action="publish-draft" data-draft-id="${escapeHtml(page.id)}">Publish</button>`}<button class="row-action" data-action="export-approved" data-draft-id="${escapeHtml(page.id)}">Export ↓</button>`}</td></tr>`).join("") : `<tr><td colspan="7"><div class="empty-state">${demo ? "No sample pages found for that search." : "No approved drafts found for that search."}</div></td></tr>`}</tbody></table></div>
     </section>
-    ${demo ? `<div class="roadmap-banner">${icon("chart")} <span><strong>Traffic and ranking reports</strong> are planned for V1 after Search Console or analytics integrations are connected. This prototype does not report live performance.</span></div>` : ""}`;
+    ${demo ? `<div class="roadmap-banner">${icon("chart")} <span>Demo pages and metrics are sample data and do not connect to a live CMS.</span></div>` : ""}`;
 }
 
 function renderSettings() {
+  if (state.user && !state.user.demo) return renderPersistedSettings();
   const workspace = currentWorkspace();
   const email = state.user ? state.user.email : "";
   const company = workspace ? workspace.name : "Your company";
@@ -978,6 +1186,54 @@ function renderSettings() {
       <section class="panel settings-card"><h2>Quality rules</h2><p>Rule-based checks make drafts easier to review.</p><div class="settings-field"><label>Target word count</label><input value="2,800 – 3,500 words" /></div><div class="settings-field"><label>Minimum FAQs</label><input value="5" /></div><div class="settings-field"><label>Required structure</label><div class="link-row">${icon("check")} Answer-first section introductions</div><div class="link-row">${icon("check")} FAQ and Article JSON-LD</div><div class="link-row">${icon("check")} No unapproved outbound links</div></div><button class="button primary" data-action="save-settings">Save QA rules</button></section>
       <section class="panel settings-card"><h2>Team &amp; agency controls</h2><p>Workspace roles and branding controls.</p><div class="link-row"><span class="profile-avatar">AM</span><span style="flex:1">Alex Morgan · Owner</span><span class="topic-label">Owner</span></div><div class="roadmap-banner">${icon("clock")} <span><strong>Agency-client links and white-label branding</strong> are planned for V1. They are not active in this MVP workspace.</span></div></section>
     </div>`;
+}
+
+function renderPersistedSettings() {
+  const workspace = currentWorkspace();
+  const canManage = canManageWorkspace();
+  const settings = state.contentSettings || { productDescription: "", approvedCta: "", minimumWordCount: 700, minimumFaqs: 5 };
+  const integrations = state.integrations || {
+    wordpress: { connected: false, siteUrl: "", username: "" },
+    google: { connected: false, searchConsoleSite: "", ga4PropertyId: "" }
+  };
+  return `
+    <div class="page-heading"><div><div class="eyebrow">WORKSPACE CONFIGURATION</div><h1>Settings</h1><p class="page-subtitle">Configure brand context, quality requirements, and publishing and analytics connections.</p></div></div>
+    <div class="settings-grid">
+      <section class="panel settings-card"><h2>Company &amp; product context</h2><p>AI topic suggestions and generated pages use this information.</p>
+        <div class="settings-field"><label for="settingWorkspaceName">Workspace name</label><input id="settingWorkspaceName" value="${escapeHtml(workspace.name)}" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="settingWebsite">Website</label><input id="settingWebsite" type="url" value="${escapeHtml(workspace.website || "")}" placeholder="https://example.com" ${canManage ? "" : "disabled"} /></div>
+        <button class="button" data-action="save-workspace-details" ${canManage ? "" : "disabled"}>Save workspace details</button>
+        <div class="settings-field"><label for="settingProductDescription">Product description</label><textarea id="settingProductDescription" maxlength="4000" ${canManage ? "" : "disabled"}>${escapeHtml(settings.productDescription)}</textarea></div>
+        <div class="settings-field"><label for="settingApprovedCta">Approved call to action</label><input id="settingApprovedCta" maxlength="300" value="${escapeHtml(settings.approvedCta)}" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="settingMinimumWords">Minimum word count</label><input id="settingMinimumWords" type="number" min="300" max="5000" value="${Number(settings.minimumWordCount) || 700}" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="settingMinimumFaqs">Minimum FAQs</label><input id="settingMinimumFaqs" type="number" min="1" max="8" value="${Number(settings.minimumFaqs) || 5}" ${canManage ? "" : "disabled"} /></div>
+        <button class="button primary" data-action="save-content-settings" ${canManage ? "" : "disabled"}>Save content guardrails</button>
+      </section>
+      <section class="panel settings-card"><h2>WordPress publishing</h2><p>Use a WordPress application password. Credentials are encrypted before storage.</p>
+        <div class="integration-status">${integrations.wordpress.connected ? chip("Connected") : chip("Not connected")}</div>
+        <div class="settings-field"><label for="wordpressSiteUrl">WordPress site URL (HTTPS)</label><input id="wordpressSiteUrl" type="url" value="${escapeHtml(integrations.wordpress.siteUrl)}" placeholder="https://example.com" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="wordpressUsername">WordPress username</label><input id="wordpressUsername" autocomplete="username" value="${escapeHtml(integrations.wordpress.username)}" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="wordpressAppPassword">Application password</label><input id="wordpressAppPassword" type="password" autocomplete="new-password" maxlength="512" placeholder="${integrations.wordpress.connected ? "Leave blank to keep saved credentials" : "Paste an application password"}" ${canManage ? "" : "disabled"} /></div>
+        <div class="integration-actions"><button class="button primary" data-action="save-wordpress" ${canManage ? "" : "disabled"}>Verify &amp; save WordPress</button>${integrations.wordpress.connected && canManage ? `<button class="button danger" data-action="disconnect-wordpress">Disconnect</button>` : ""}</div>
+      </section>
+      <section class="panel settings-card"><h2>Google Search Console &amp; GA4</h2><p>Connect read-only access for search and traffic reporting.</p>
+        <div class="integration-status">${integrations.google.connected ? chip("Connected") : chip("Not connected")}</div>
+        <div class="settings-field"><label for="googleSearchConsoleSite">Search Console property</label><input id="googleSearchConsoleSite" value="${escapeHtml(integrations.google.searchConsoleSite)}" placeholder="https://example.com/ or sc-domain:example.com" ${canManage ? "" : "disabled"} /></div>
+        <div class="settings-field"><label for="ga4PropertyId">GA4 property ID</label><input id="ga4PropertyId" inputmode="numeric" value="${escapeHtml(integrations.google.ga4PropertyId)}" placeholder="123456789" ${canManage ? "" : "disabled"} /></div>
+        <div class="integration-actions"><button class="button" data-action="save-google-properties" ${canManage ? "" : "disabled"}>Save properties</button><button class="button primary" data-action="connect-google" ${canManage ? "" : "disabled"}>${integrations.google.connected ? "Reconnect Google" : "Connect Google"}</button>${integrations.google.connected && canManage ? `<button class="button danger" data-action="disconnect-google">Disconnect</button>` : ""}</div>
+        <p class="settings-help">Google authorization requests read-only Search Console and Analytics access. Add the configured callback URL to your Google OAuth client.</p>
+      </section>
+      <section class="panel settings-card"><h2>Workspace access</h2><p>Content, integrations, and analytics are scoped to workspace membership.</p><div class="link-row">${icon("check")} Role: ${escapeHtml(workspace.role)}</div><div class="link-row">${icon("check")} Data stored in PostgreSQL</div><div class="link-row">${icon("check")} Provider credentials encrypted at rest</div></section>
+    </div>`;
+}
+
+function renderAnalytics() {
+  const rows = state.analytics || [];
+  const formatMetric = (value) => Number(value || 0).toLocaleString();
+  return `
+    <div class="page-heading"><div><div class="eyebrow">SEARCH &amp; PERFORMANCE</div><h1>Analytics</h1><p class="page-subtitle">Search Console and GA4 metrics for published pages.</p></div><div class="heading-actions"><button class="button primary" data-action="sync-analytics">${icon("chart")} Sync metrics</button></div></div>
+    ${rows.length ? `<section class="panel published-panel"><div class="panel-heading"><div><h2>Page performance</h2><p>Metrics are fetched from the connected Google properties.</p></div></div><div class="table-wrap"><table class="topic-table analytics-table"><thead><tr><th>PAGE</th><th>CLICKS</th><th>IMPRESSIONS</th><th>AVG. POSITION</th><th>SESSIONS</th><th>VIEWS</th><th>PERIOD</th></tr></thead><tbody>${rows.map((row) => `<tr><td><a href="${escapeHtml(row.publishedUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.title)}</a></td><td>${formatMetric(row.clicks)}</td><td>${formatMetric(row.impressions)}</td><td>${Number(row.averagePosition || 0).toFixed(1)}</td><td>${formatMetric(row.sessions)}</td><td>${formatMetric(row.views)}</td><td>${escapeHtml(new Date(row.periodStart).toLocaleDateString())} – ${escapeHtml(new Date(row.periodEnd).toLocaleDateString())}</td></tr>`).join("")}</tbody></table></div></section>` : `<section class="panel empty-client-state"><span class="empty-art">${icon("chart")}</span><h2>No analytics have been synced.</h2><p>Connect Google Search Console and GA4 in Settings, then sync metrics for your published pages.</p><button class="button" data-view="settings">Configure integrations</button></section>`}
+    <div class="roadmap-banner">${icon("clock")} <span>Google data is read-only and is refreshed only when a workspace member requests a sync.</span></div>`;
 }
 
 function escapeHtml(value) {
@@ -1012,6 +1268,14 @@ function openBatchModal() {
     <div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="create-batch">${icon("spark")} Create batch</button></div>`);
 }
 
+function openTopicBatchModal() {
+  openModal(`<div class="eyebrow">AI TOPIC SUGGESTIONS</div><h2 id="modalTitle">Suggest a topic batch</h2><p class="modal-intro">The AI proposes up to eight topics using the workspace's product context. An owner or admin must approve them before page generation.</p>
+    <div class="settings-field"><label for="batchName">Batch name</label><input id="batchName" maxlength="120" value="${escapeHtml(state.selectedVertical)} · New topic batch" /></div>
+    <div class="settings-field"><label for="batchVertical">Industry vertical</label><select id="batchVertical">${state.verticals.map((vertical) => `<option ${vertical.name === state.selectedVertical ? "selected" : ""}>${escapeHtml(vertical.name)}</option>`).join("")}</select></div>
+    <div class="onboarding-data-note">AI suggestions are limited per workspace. Review all generated claims and technical details before publishing.</div>
+    <div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="create-ai-batch">${icon("spark")} Generate suggestions</button></div>`);
+}
+
 function openWorkspaceModal() {
   openModal(`<div class="eyebrow">ORGANIZATION SWITCHER</div><h2 id="modalTitle">Your workspaces</h2><p class="modal-intro">Each organization has its own team setup and client projects.</p><div class="workspace-choice-list">${state.workspaces.map((workspace) => `<button class="workspace-choice ${workspace.id === state.activeWorkspaceId ? "selected" : ""}" data-action="switch-workspace" data-workspace="${escapeHtml(workspace.id)}"><span class="workspace-choice-avatar">${escapeHtml(workspace.name.slice(0, 1))}</span><span><b>${escapeHtml(workspace.name)}</b><small>${escapeHtml(workspace.industry)} · ${escapeHtml(workspace.role)}</small></span><i>${workspace.id === state.activeWorkspaceId ? icon("check") : icon("chevron")}</i></button>`).join("")}</div><div class="modal-footer modal-footer-between"><button class="button" data-action="create-workspace-form">${icon("plus")} New workspace</button><button class="button" data-action="close-modal">Done</button></div>`);
 }
@@ -1026,10 +1290,34 @@ function openInviteModal() {
 }
 
 async function initializeApp() {
+  const currentPort = window.location.port;
+  const isStaticDev = currentPort === "5500" || currentPort === "5501" || currentPort === "5502" || currentPort === "8080";
+  if (isStaticDev) {
+    const host = window.location.hostname || "localhost";
+    const targetUrl = `http://${host}:4000`;
+    try {
+      const probe = await fetch(`${targetUrl}/health/live`, { cache: "no-store" });
+      if (probe.ok) {
+        window.location.replace(`${targetUrl}${window.location.search}${window.location.hash}`);
+        return;
+      }
+    } catch {
+      // Backend not running on port 4000 yet; reveal helper notice
+    }
+    const notice = document.getElementById("devPortNotice");
+    if (notice) {
+      notice.hidden = false;
+      const dismiss = document.getElementById("devNoticeDismiss");
+      if (dismiss) dismiss.onclick = () => { notice.hidden = true; };
+    }
+  }
   const parameters = new URLSearchParams(window.location.search);
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const billingResult = parameters.get("billing");
-  if (["success", "cancel"].includes(billingResult)) window.history.replaceState({}, "", window.location.pathname);
+  const googleResult = parameters.get("google");
+  if (["success", "cancel"].includes(billingResult) || ["connected", "error"].includes(googleResult)) {
+    window.history.replaceState({}, "", window.location.pathname);
+  }
   const invitationToken = fragment.get("invite") || parameters.get("invite");
   if (invitationToken && /^[A-Za-z0-9_-]{43}$/.test(invitationToken)) {
     sessionStorage.setItem("rankforge-pending-invitation", invitationToken);
@@ -1073,12 +1361,14 @@ async function initializeApp() {
     showProduct();
     if (billingResult === "success") showToast("Checkout completed. Stripe is confirming the subscription.");
     if (billingResult === "cancel") showToast("Checkout was cancelled.");
+    if (googleResult === "connected") showToast("Google Search Console and Analytics are connected.");
+    if (googleResult === "error") showToast("Google could not be connected. Check your OAuth configuration and try again.");
   } catch (error) {
     if (error.status === 401 && sessionStorage.getItem("rankforge-pending-invitation")) {
       showInvitationSignup(sessionStorage.getItem("rankforge-pending-invitation"));
     } else {
       showPublic();
-      if (error.status !== 401) showToast("Secure backend is unavailable. Start the server and try again.");
+      if (error.status !== 401) showToast(error.message || "Secure backend is unavailable. Start the server and try again.");
     }
   }
 }
@@ -1130,7 +1420,8 @@ function bindPageEvents() {
 }
 
 async function handleAction(action, button) {
-  if (action === "new-batch") return openBatchModal();
+  if (action === "new-batch") return state.user && !state.user.demo ? openTopicBatchModal() : openBatchModal();
+  if (action === "suggest-batch") return openTopicBatchModal();
   if (action === "close-modal") return closeModal();
   if (action === "workspace-switcher") return openWorkspaceModal();
   if (action === "create-workspace-form") return openWorkspaceForm();
@@ -1348,6 +1639,65 @@ async function handleAction(action, button) {
     showToast("Batch created with sample topic suggestions.");
     return;
   }
+  if (action === "create-ai-batch") {
+    const name = document.getElementById("batchName").value.trim();
+    const vertical = document.getElementById("batchVertical").value;
+    if (!name) return showToast("Add a name for your batch before continuing.");
+    try {
+      const batch = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/batches/suggest`, {
+        method: "POST",
+        body: { name, vertical }
+      });
+      closeModal();
+      await refreshWorkspaceContent();
+      setView("topics");
+      showToast(`${batch.topics.length} topic suggestions added for owner/admin approval.`);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "approve-batch" || action === "reject-batch") {
+    const batchId = button.dataset.batchId;
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/batches/${encodeURIComponent(batchId)}/approval`, {
+        method: "PATCH",
+        body: { action: action === "approve-batch" ? "approve" : "reject" }
+      });
+      await refreshWorkspaceContent();
+      render();
+      showToast(result.status === "approved" ? "Topic batch approved. Pages can now be generated." : "Topic batch rejected.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "generate-batch") {
+    const batchId = button.dataset.batchId;
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/batches/${encodeURIComponent(batchId)}/generate`, {
+        method: "POST",
+        body: {}
+      });
+      await refreshWorkspaceContent();
+      state.activeDraftId = result.drafts[0] ? result.drafts[0].id : state.drafts[0] && state.drafts[0].id;
+      setView("review");
+      if (result.failures && result.failures.length) {
+        showToast(`${result.drafts.length} pages generated; ${result.failures.length} topic${result.failures.length === 1 ? "" : "s"} failed. Retry the batch after reviewing.`);
+      } else {
+        showToast(`${result.drafts.length} page${result.drafts.length === 1 ? "" : "s"} generated with quality reports.`);
+      }
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "open-review") {
+    const draft = state.drafts[0];
+    if (draft) state.activeDraftId = draft.id;
+    setView("review");
+    return;
+  }
   if (action === "auto-patch") {
     if (!state.qaPatched) {
       state.qaPatched = true;
@@ -1423,10 +1773,75 @@ async function handleAction(action, button) {
     try {
       const draft = await apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/drafts/${encodeURIComponent(draftId)}`);
       if (draft.status !== "Approved") throw new Error("Only approved drafts can be exported.");
-      const paragraphs = String(draft.content || "").split(/\r?\n/).map((line) => line.trim()
-        ? `<p>${escapeHtml(line)}</p>`
-        : "").join("\n");
-      const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(draft.title)}</title></head><body><main><article><h1>${escapeHtml(draft.title)}</h1>${paragraphs}</article></main></body></html>`;
+      const metaDescription = draft.seoData && draft.seoData.metaDescription ? draft.seoData.metaDescription : "";
+      const schema = draft.seoData && Array.isArray(draft.seoData.schema) ? draft.seoData.schema : [];
+      const jsonLd = schema.length ? `<script type="application/ld+json">\n${JSON.stringify(schema, null, 2)}\n</script>` : "";
+
+      const rawLines = String(draft.content || "").split(/\r?\n/);
+      const blocks = [];
+      let pLines = [];
+      const flushP = () => {
+        if (pLines.length) {
+          blocks.push(`<p>${pLines.map(escapeHtml).join(" ")}</p>`);
+          pLines = [];
+        }
+      };
+      for (const rawLine of rawLines) {
+        const line = rawLine.trim();
+        if (!line) {
+          flushP();
+          continue;
+        }
+        const h3 = /^###\s+(.+)$/.exec(line);
+        const h2 = /^##\s+(.+)$/.exec(line);
+        const h1 = /^#\s+(.+)$/.exec(line);
+        const bullet = /^[-*]\s+(.+)$/.exec(line);
+        if (h3) {
+          flushP();
+          blocks.push(`<h3>${escapeHtml(h3[1])}</h3>`);
+        } else if (h2) {
+          flushP();
+          blocks.push(`<h2>${escapeHtml(h2[1])}</h2>`);
+        } else if (h1) {
+          flushP();
+          blocks.push(`<h2>${escapeHtml(h1[1])}</h2>`);
+        } else if (bullet) {
+          flushP();
+          blocks.push(`<ul><li>${escapeHtml(bullet[1])}</li></ul>`);
+        } else {
+          pLines.push(line);
+        }
+      }
+      flushP();
+      const contentHtml = blocks.join("\n");
+
+      const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(draft.title)}</title>
+  ${metaDescription ? `<meta name="description" content="${escapeHtml(metaDescription)}">` : ""}
+  ${jsonLd}
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 820px; margin: 40px auto; padding: 0 20px; color: #1e293b; background: #ffffff; }
+    h1 { font-size: 2.2rem; line-height: 1.25; margin-bottom: 1.5rem; color: #0f172a; }
+    h2 { font-size: 1.5rem; margin-top: 2rem; margin-bottom: 1rem; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; }
+    h3 { font-size: 1.2rem; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #334155; }
+    p { margin-bottom: 1.2rem; font-size: 1.05rem; }
+    ul { margin-bottom: 1.2rem; padding-left: 1.5rem; }
+    li { margin-bottom: 0.4rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <article>
+      <h1>${escapeHtml(draft.title)}</h1>
+      ${contentHtml}
+    </article>
+  </main>
+</body>
+</html>`;
       const blobUrl = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
       const anchor = document.createElement("a");
       anchor.href = blobUrl;
@@ -1525,6 +1940,167 @@ async function handleAction(action, button) {
     }
     return;
   }
+  if (action === "quality-check") {
+    const draft = currentDraft();
+    if (!draft) return showToast("Choose a draft to check.");
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}/quality-check`, {
+        method: "POST",
+        body: {}
+      });
+      draft.seoData = result.seoData;
+      draft.qualityReport = result.qualityReport;
+      draft.qualityCheckedAt = result.qualityReport.checkedAt;
+      render();
+      showToast(result.qualityReport.passed ? "All configured quality checks passed." : "Quality checks found issues to address.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "repair-draft") {
+    const draft = currentDraft();
+    if (!draft) return showToast("Choose a draft to repair.");
+    try {
+      const updated = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}/repair`, {
+        method: "POST",
+        body: {}
+      });
+      Object.assign(draft, updated);
+      render();
+      showToast("AI repair completed and passed the configured quality checks.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "publish-draft") {
+    const draftId = button.dataset.draftId || (currentDraft() && currentDraft().id);
+    if (!draftId) return showToast("Choose an approved draft to publish.");
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draftId)}/publish`, {
+        method: "POST",
+        body: {}
+      });
+      await refreshWorkspaceContent();
+      render();
+      showToast(`Published to WordPress: ${result.url}`);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "sync-analytics") {
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/analytics/sync`, {
+        method: "POST",
+        body: {}
+      });
+      await loadAnalytics();
+      showToast(`Analytics synced for ${result.synced} published pages.`);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "save-workspace-details") {
+    const workspace = currentWorkspace();
+    const name = document.getElementById("settingWorkspaceName").value.trim();
+    const website = document.getElementById("settingWebsite").value.trim();
+    if (!name) return showToast("Workspace name cannot be empty.");
+    try {
+      const updated = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}`, {
+        method: "PATCH",
+        body: { name, website }
+      });
+      Object.assign(workspace, updated);
+      updateWorkspaceChrome();
+      render();
+      showToast("Workspace details saved.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "save-content-settings") {
+    const body = {
+      productDescription: document.getElementById("settingProductDescription").value,
+      approvedCta: document.getElementById("settingApprovedCta").value,
+      minimumWordCount: Number(document.getElementById("settingMinimumWords").value),
+      minimumFaqs: Number(document.getElementById("settingMinimumFaqs").value)
+    };
+    try {
+      state.contentSettings = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/content-settings`, {
+        method: "PUT",
+        body
+      });
+      render();
+      showToast("Content and quality guardrails saved.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "save-wordpress") {
+    const body = {
+      siteUrl: document.getElementById("wordpressSiteUrl").value.trim(),
+      username: document.getElementById("wordpressUsername").value.trim(),
+      appPassword: document.getElementById("wordpressAppPassword").value
+    };
+    try {
+      state.integrations = state.integrations || {};
+      state.integrations.wordpress = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/integrations/wordpress`, {
+        method: "PUT",
+        body
+      });
+      await loadWorkspaceSettings();
+      showToast("WordPress connection verified and saved.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "disconnect-wordpress" || action === "disconnect-google") {
+    const integrationName = action === "disconnect-wordpress" ? "WordPress" : "Google";
+    try {
+      await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/integrations/${integrationName.toLowerCase()}`, {
+        method: "DELETE"
+      });
+      await loadWorkspaceSettings();
+      showToast(`${integrationName} disconnected.`);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "save-google-properties") {
+    try {
+      await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/integrations/google-properties`, {
+        method: "PUT",
+        body: {
+          searchConsoleSite: document.getElementById("googleSearchConsoleSite").value.trim(),
+          ga4PropertyId: document.getElementById("ga4PropertyId").value.trim()
+        }
+      });
+      await loadWorkspaceSettings();
+      showToast("Google reporting properties saved.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "connect-google") {
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/integrations/google/authorization`, {
+        method: "POST",
+        body: {}
+      });
+      window.location.assign(result.authorizationUrl);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
   if (action === "add-topic") {
     openModal(`<div class="eyebrow">Topic suggestion</div><h2 id="modalTitle">Add an industrial topic</h2><p class="modal-intro">Add a topic to your workspace's review queue.</p><div class="settings-field"><label for="topicName">Topic idea</label><input id="topicName" placeholder="e.g. Predictive maintenance for filling machines" /></div><div class="settings-field"><label for="topicVertical">Vertical</label><select id="topicVertical">${state.verticals.map((v) => `<option ${v.name === state.selectedVertical ? "selected" : ""}>${escapeHtml(v.name)}</option>`).join("")}</select></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-topic">Add topic</button></div>`);
     return;
@@ -1553,6 +2129,21 @@ async function handleAction(action, button) {
     closeModal();
     setView("topics");
     showToast("Topic added to your sample suggestions.");
+    return;
+  }
+  if (action === "delete-topic") {
+    const topicId = button.dataset.topicId;
+    if (!topicId) return;
+    try {
+      await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/topics/${encodeURIComponent(topicId)}`, {
+        method: "DELETE"
+      });
+      await refreshWorkspaceContent();
+      render();
+      showToast("Topic removed.");
+    } catch (error) {
+      showToast(error.message);
+    }
     return;
   }
   if (action === "save-settings") {

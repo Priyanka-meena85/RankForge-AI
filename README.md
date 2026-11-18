@@ -1,13 +1,13 @@
 # RankForge AI
 
-RankForge AI is an industrial content workspace with a Node.js/Express API and PostgreSQL persistence for accounts, workspaces, topics, drafts, review decisions, invitations, and subscription state. AI generation and publishing integrations are not enabled.
+RankForge AI is an industrial SEO content workspace with a Node.js/Express API and PostgreSQL persistence for accounts, workspaces, topics, batches, drafts, review decisions, quality guardrails, integrations, invitations, and subscription state.
 
 ## Run locally
 
 Requirements: Node.js 22 or 24, PostgreSQL, and a TLS-capable SMTP service for account verification, recovery, and invitations.
 
 1. Create a PostgreSQL database and copy `.env.example` to `.env`.
-2. Set `DATABASE_URL`, a random `SESSION_SECRET` of at least 32 bytes, `SMTP_URL`, `EMAIL_FROM`, and `APP_ORIGIN` (for local development, `http://localhost:3000`).
+2. Set `DATABASE_URL`, a random `SESSION_SECRET` of at least 32 bytes, `SMTP_URL`, `EMAIL_FROM`, and `APP_ORIGIN` (for local development, `http://localhost:4000`).
 3. Install and start:
 
 ```powershell
@@ -19,13 +19,14 @@ In development, the server applies the idempotent schema at startup. Open `APP_O
 
 ## Implemented
 
+- Complete 8-step industrial SEO content lifecycle: vertical taxonomy topic suggestions, batch approvals, structured AI page generation (with OpenAI or built-in industrial generator), automated SEO rule validation & auto-patching, human review with QA feedback loops, direct WordPress publishing or clean standalone HTML exports, and Search Console/GA4 traffic & ranking performance dashboards.
 - Argon2id password hashing (with legacy scrypt verification and upgrade), email verification, single-use password recovery, change notifications, and session invalidation after password changes.
 - PostgreSQL-backed sessions and production authentication rate limits; secure cookie settings, CSRF/origin checks, Helmet headers, a restrictive content security policy, bounded JSON requests, and generic API errors.
 - Workspace-scoped membership and content authorization for topics, drafts, review decisions, and feedback. Workspace invitations use hashed, expiring, single-use tokens and are restricted to the invited email.
 - Stripe Checkout, customer portal sessions, signed webhook verification, event deduplication, and subscription state synchronization.
 - Health and readiness endpoints, production HTTPS enforcement behind the Render ingress or explicitly trusted proxies, configurable database TLS and bounded connection/query timeouts, graceful shutdown, and transaction-locked schema migrations.
 
-See [WORKFLOW.md](./WORKFLOW.md) for user flows and [`.env.example`](./.env.example) for configuration names.
+See [WORKFLOW.md](./WORKFLOW.md) for user flows, download the [workflow PDF](./WORKFLOW.pdf), and see [`.env.example`](./.env.example) for configuration names.
 
 ## Render deployment
 
@@ -45,4 +46,4 @@ For non-Render production, configure `NODE_ENV=production`, `DATABASE_SSL_MODE=v
 
 This project now has a production container, CI checks backed by PostgreSQL, and a deployment path, but it is **not yet verified production-ready**. Before onboarding customers, validate against the actual PostgreSQL, SMTP, Stripe, and hosting configuration; test database backup restoration and incident recovery; define privacy, retention, support, and data-export/deletion processes; configure centralized monitoring and alerting; and perform an independent deployment security review. Tenant authorization is enforced in API queries and routes, but PostgreSQL row-level security is not configured. Audit events cover selected content and invitation actions, not every administrative operation. Plan entitlement limits, metering, and advanced operational controls also need product-specific validation.
 
-Run `npm run check`, `npm test`, and `npm audit --omit=dev` before release. When `TEST_DATABASE_URL` points to a dedicated database ending in `_test`, `npm test` also runs real PostgreSQL integration tests. CI provisions PostgreSQL and runs this suite. Tests simulate mail and Stripe providers; they do not substitute for production provider, load, backup/restore, or deployment tests. AI generation is intentionally deferred.
+Run `npm run check`, `npm test`, and `npm audit --omit=dev` before release. When `TEST_DATABASE_URL` points to a dedicated database ending in `_test`, `npm test` also runs real PostgreSQL integration tests. CI provisions PostgreSQL and runs this suite. Tests simulate mail, Stripe, and AI/integration providers; they do not substitute for production provider, load, backup/restore, or deployment tests.

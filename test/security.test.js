@@ -51,12 +51,15 @@ function createFakePool() {
       return { rows: [{ id: user.id, name: user.name, email: user.email, auth_version: user.auth_version }] };
     }
     if (statement.startsWith("insert into workspaces")) {
+      const cols = statement.slice(0, statement.indexOf("values"));
+      const hasWebsite = cols.includes("website");
+      const hasType = cols.includes("workspace_type");
       const workspace = {
         id: values[0],
         name: values[1],
         industry: values[2],
-        website: "",
-        workspace_type: statement.includes("workspace_type") ? values[3] : "standard",
+        website: hasWebsite ? (values[3] || "") : "",
+        workspace_type: hasType ? (hasWebsite ? values[4] : values[3]) : "standard",
         plan: "Starter"
       };
       workspaces.push(workspace);
@@ -196,6 +199,16 @@ function createFakePool() {
     if (statement.startsWith("select id from workspaces where id")) {
       return { rows: workspaces.filter((workspace) => workspace.id === values[0]).map(({ id }) => ({ id })) };
     }
+    if (statement.startsWith("delete from workspace_topics")) {
+      const index = topics.findIndex((item) => item.id === values[0] && item.workspace_id === values[1]);
+      const [removed] = index >= 0 ? topics.splice(index, 1) : [];
+      return { rows: removed ? [{ id: removed.id }] : [] };
+    }
+    if (statement.includes("from workspace_drafts d join workspaces w on w.id = d.workspace_id")) {
+      const draft = drafts.find((d) => d.id === values[0] && d.workspace_id === values[1]);
+      const workspace = workspaces.find((w) => w.id === values[1]);
+      return { rows: draft && workspace ? [{ ...draft, workspace_name: workspace.name }] : [] };
+    }
     if (statement.startsWith("select count(*)::integer as total from workspace_topics")) {
       return { rows: [{ total: topics.filter((topic) => topic.workspace_id === values[0]).length }] };
     }
@@ -225,7 +238,7 @@ function createFakePool() {
     if (statement.startsWith("select id, topic_id, title, status, version, created_by, updated_by, reviewed_by, reviewed_at, created_at, updated_at from workspace_drafts")) {
       return { rows: drafts.filter((draft) => draft.workspace_id === values[0]).slice(0, values[1]) };
     }
-    if (statement.startsWith("select id, topic_id, title, body, status, version, created_by, updated_by, reviewed_by, reviewed_at, created_at, updated_at from workspace_drafts where id")) {
+    if (statement.includes("from workspace_drafts where id = $1 and workspace_id = $2")) {
       return { rows: drafts.filter((draft) => draft.id === values[0] && draft.workspace_id === values[1]).map((draft) => ({ ...draft })) };
     }
     if (statement.startsWith("select id, draft_id, author_id, action, comment, created_at from draft_feedback")) {
@@ -281,6 +294,13 @@ function createFakePool() {
       };
       if (current) Object.assign(current, checkout);
       else subscriptions.push(checkout);
+      return { rows: [] };
+    }
+    if (statement.startsWith("insert into workspace_subscriptions (workspace_id, status)")) {
+      const current = subscriptions.find((item) => item.workspace_id === values[0]);
+      if (!current) {
+        subscriptions.push({ workspace_id: values[0], status: values[1] || "trialing" });
+      }
       return { rows: [] };
     }
     if (statement.startsWith("insert into workspace_subscriptions")) {
@@ -477,7 +497,8 @@ async function apiRequest(baseUrl, account, path, method = "GET", body) {
     headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
-  return { response, body: response.status === 204 ? null : await response.json() };
+  const isJson = response.headers.get("content-type") && response.headers.get("content-type").includes("application/json");
+  return { response, body: response.status === 204 ? null : (isJson ? await response.json() : await response.text()) };
 }
 
 async function anonymousPost(baseUrl, path, body) {
@@ -807,6 +828,13 @@ test("workspace content persists and authorization is checked per operation", as
   const saved = await apiRequest(baseUrl, writer, `/api/workspaces/${workspaceId}/drafts/${draft.body.id}`);
   assert.equal(saved.body.content, "Persistent draft content.");
   assert.equal(saved.body.status, "Approved");
+
+  const exported = await apiRequest(baseUrl, writer, `/api/workspaces/${workspaceId}/drafts/${draft.body.id}/export`);
+  assert.equal(exported.response.status, 200);
+
+  const del = await apiRequest(baseUrl, writer, `/api/workspaces/${workspaceId}/topics/${topic.body.id}`, "DELETE");
+  assert.equal(del.response.status, 200);
+
   const foreignWorkspace = await apiRequest(baseUrl, writer, "/api/workspaces/00000000-0000-4000-8000-000000000000/content");
   assert.equal(foreignWorkspace.response.status, 404);
 });
@@ -957,4 +985,58 @@ test("Stripe webhooks require signatures, deduplicate events, and update subscri
   const duplicate = await sendWebhook();
   assert.equal(duplicate.status, 200);
   assert.equal((await duplicate.json()).duplicate, true);
+});
+
+test("local development allows Live Server origins with CORS while untrusted origins remain blocked", async (t) => {
+  const baseUrl = await startTestServer(t);
+  const liveServerOrigin = "http://127.0.0.1:5500";
+  const untrustedOrigin = "https://untrusted-attacker.com";
+
+  // Preflight OPTIONS request from Live Server
+  const preflight = await fetch(`${baseUrl}/api/csrf`, {
+    method: "OPTIONS",
+    headers: {
+      Origin: liveServerOrigin,
+      "Access-Control-Request-Method": "GET"
+    }
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), liveServerOrigin);
+  assert.equal(preflight.headers.get("access-control-allow-credentials"), "true");
+
+  // GET /api/csrf from Live Server
+  const csrfResponse = await fetch(`${baseUrl}/api/csrf`, {
+    headers: { Origin: liveServerOrigin }
+  });
+  assert.equal(csrfResponse.status, 200);
+  assert.equal(csrfResponse.headers.get("access-control-allow-origin"), liveServerOrigin);
+  const { csrfToken } = await csrfResponse.json();
+  const sessionCookie = csrfResponse.headers.get("set-cookie").split(";")[0];
+
+  // POST with valid CSRF token from Live Server succeeds past requireCsrf
+  const postFromLiveServer = await fetch(`${baseUrl}/api/auth/logout`, {
+    method: "POST",
+    headers: {
+      Origin: liveServerOrigin,
+      Cookie: sessionCookie,
+      "X-CSRF-Token": csrfToken
+    }
+  });
+  assert.equal(postFromLiveServer.status, 204);
+
+  // Untrusted origin gets no CORS header and is blocked by requireCsrf
+  const untrustedCsrf = await fetch(`${baseUrl}/api/csrf`, {
+    headers: { Origin: untrustedOrigin }
+  });
+  assert.equal(untrustedCsrf.headers.get("access-control-allow-origin"), null);
+
+  const blockedUntrusted = await fetch(`${baseUrl}/api/auth/logout`, {
+    method: "POST",
+    headers: {
+      Origin: untrustedOrigin,
+      Cookie: sessionCookie,
+      "X-CSRF-Token": csrfToken
+    }
+  });
+  assert.equal(blockedUntrusted.status, 403);
 });

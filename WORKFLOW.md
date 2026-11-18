@@ -1,6 +1,6 @@
 # RankForge AI workflow guide
 
-The authenticated workspace stores topics, drafts, review decisions, invitations, and subscription state in PostgreSQL. **Explore a sample workspace** remains a separate browser-only demo. AI generation, CMS publishing, and analytics are not connected.
+The authenticated workspace stores topics, batches, drafts, review decisions, quality guardrails, integrations, invitations, and subscription state in PostgreSQL. **Explore a sample workspace** remains an offline demo preview.
 
 ## 1. Start the app
 
@@ -30,15 +30,37 @@ Account creation and password recovery require a functioning SMTP configuration.
 - Owners and admins can change roles, remove members, and revoke pending invitations. API membership and role checks are applied on every operation.
 - **Client workspaces** creates separate workspaces; agency-to-client linking is not modeled.
 
-## 4. Work with topics and drafts
+## 4. Industrial SEO content workflow
 
-1. Open **Topics & batches** and add a topic to the workspace.
-2. Select topics and use the generation action to create draft records.
-3. AI generation is not connected; add or edit draft content manually and save it.
-4. Submit a draft for review. Editors can prepare and submit drafts; owners, admins, and reviewers can approve or request changes.
-5. Reviewer feedback and review state are stored in PostgreSQL. Changes to approved drafts return them to Draft status.
+The workspace implements an end-to-end 8-step content generation, review, and publishing process:
 
-The API enforces workspace membership, role permissions, request validation, and configured topic/draft storage limits. The sample demo's topics, drafts, patching, and exports are browser-only and should not be used for customer content.
+1. **Client onboarding:**
+   - Registration captures company name, target industry vertical, website URL, and credentials.
+   - **Settings** manages workspace properties (name, website) and content guardrails (product description, approved CTA, minimum word count, minimum FAQs).
+2. **Topic suggestions:**
+   - Automatically suggests high-intent industrial topics derived from deep vertical taxonomies (Automotive, Steel, Food & Beverage, HVAC, Chemical, Textile, General Industrial).
+   - Powered by OpenAI when `OPENAI_API_KEY` is configured, with built-in taxonomy suggestion fallback when unconfigured or offline. Daily batch suggestion requests are rate-limited to maintain service quality.
+3. **Client topic approval and batching:**
+   - Clients and team members review suggested topics, approve target topics, or delete unneeded ideas.
+   - Approved topics are grouped into structured content batches (up to 8 topics per batch) for bulk generation.
+4. **AI page generation:**
+   - Generates complete industrial articles containing SEO title, target keyword, meta description, 4+ deep technical sections with specifications, 5+ FAQs, valid Article & FAQPage JSON-LD schemas, and workspace-approved CTAs exceeding 700 words.
+   - Powered by OpenAI or the built-in industrial taxonomy generator. Monthly generation quotas are tracked per subscription tier (Starter: 20 pages/month, Growth: 150 pages/month).
+5. **Automated validation & auto-patching:**
+   - Immediate rule verification checks word count, section count, FAQ count, meta description length (100–160 characters), CTA placement, and JSON-LD schema validity.
+   - The auto-patch engine automatically fixes rule violations, expands thin content, injects missing schema scripts, and standardizes descriptions during generation and via the Repair action.
+6. **Human review:**
+   - Content Review presents an interactive QA strip showing real-time checklist status for each SEO criterion.
+   - Reviewers and admins can approve drafts or request changes with feedback notes.
+   - Requesting changes feeds reviewer notes back into AI auto-repair for iterative refinement. Changes to approved drafts safely return them to Draft status.
+7. **Publish or export:**
+   - **Clean HTML export:** Download standalone, semantic HTML files formatted with meta tags, responsive typography, and embedded JSON-LD structured data.
+   - **WordPress CMS publishing:** Publish directly to WordPress via authenticated REST API credentials, creating draft or published posts and saving live permalinks and post IDs. Stored credentials are encrypted at rest with AES-256-GCM.
+8. **Track results:**
+   - **Analytics dashboard:** Track search impressions, clicks, click-through rate (CTR), average SERP ranking position, and page engagement.
+   - Connects live Google Search Console and GA4 properties with encrypted OAuth credentials, and provides baseline simulation for local development.
+
+The API enforces workspace membership, role permissions, request validation, and configured storage limits. The sample demo remains available for quick local exploration.
 
 ## 5. Billing
 
@@ -52,14 +74,14 @@ Billing integration does not itself enforce every product entitlement or usage q
 
 1. Create a paid Render web service from the repository's [Dockerfile](./Dockerfile) and a PostgreSQL database in the same region.
 2. Set `/health/ready` as the HTTP health-check path and `npm run db:migrate` as the pre-deploy command.
-3. Use the database internal URL with `DATABASE_SSL_MODE=require`. Render is detected automatically for proxy trust; the application accepts its HTTPS-terminated ingress and rejects direct HTTP for application routes.
+3. Use the database internal URL with `DATABASE_SSL_MODE=verify-full`. If the database certificate uses a private CA, set `DATABASE_SSL_CA` to the provider's trusted PEM certificate. Do not put PostgreSQL TLS options such as `sslmode` in `DATABASE_URL`; configure TLS with the environment variables instead. Render is detected automatically for proxy trust; the application accepts its HTTPS-terminated ingress and rejects direct HTTP for application routes.
 4. Set `APP_ORIGIN` to the canonical HTTPS origin (custom domain if configured), `SESSION_SECRET` to a generated secret, and configure SMTP and Stripe secrets/price IDs in Render's secret environment-variable settings.
 5. Set `PG_POOL_MAX` to fit the database connection budget across the maximum number of service instances. Keep direct database access private.
 
 ### Other hosts
 
 1. Provision PostgreSQL with TLS and network access restricted to the application.
-2. Configure `NODE_ENV=production`, `DATABASE_SSL_MODE=verify-full` where the CA is trusted (otherwise `require` for private provider endpoints), `APP_ORIGIN` as HTTPS, SMTP, Stripe keys/price IDs, and a secret-manager-provided session key.
+2. Configure `NODE_ENV=production`, `DATABASE_SSL_MODE=verify-full`, and `DATABASE_SSL_CA` when the database CA is not system-trusted. Do not put PostgreSQL TLS options in `DATABASE_URL`. Also configure `APP_ORIGIN` as HTTPS, SMTP, Stripe keys/price IDs, and a secret-manager-provided session key.
 3. Set `TRUST_PROXY` to the exact trusted proxy IPs/CIDRs. Do not expose the application port publicly; terminate TLS at that proxy.
 4. Run `npm run db:migrate`, then start the container or `npm start`. Production startup refuses an unconfigured database, proxy, SMTP, Stripe, or migration.
 

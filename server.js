@@ -1,5 +1,4 @@
 const crypto = require("node:crypto");
-const fs = require("node:fs");
 const path = require("node:path");
 const { promisify } = require("node:util");
 require("dotenv").config();
@@ -12,6 +11,8 @@ const connectPgSimple = require("connect-pg-simple");
 const nodemailer = require("nodemailer");
 const Stripe = require("stripe");
 const { Pool } = require("pg");
+const { applyMigrations, CURRENT_SCHEMA_VERSION } = require("./db/migrations");
+const { assertProductionDatabaseTls, createPostgresPoolConfig, resolveTrustProxy } = require("./db/postgres");
 
 const scrypt = promisify(crypto.scrypt);
 const SESSION_MAX_AGE = 1000 * 60 * 60 * 8;
@@ -32,7 +33,6 @@ const ROLE_LABELS = {
 };
 const ROLE_VALUES = new Set(Object.keys(ROLE_LABELS));
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const schema = fs.readFileSync(path.join(__dirname, "db", "schema.sql"), "utf8");
 
 class PostgreSQLRateLimitStore {
   constructor(pool) {
@@ -276,7 +276,8 @@ function createApp({
   }));
   if (production) {
     app.use((req, res, next) => {
-      if (!req.secure) return res.status(426).type("text/plain").send("HTTPS is required.");
+      const healthProbe = req.path === "/health/live" || req.path === "/health/ready";
+      if (!healthProbe && !req.secure) return res.status(426).type("text/plain").send("HTTPS is required.");
       next();
     });
   }
@@ -328,7 +329,9 @@ function createApp({
              VALUES ($1, $2, $3, $4, $5, $6, now())
              ON CONFLICT (workspace_id) DO UPDATE SET stripe_customer_id = EXCLUDED.stripe_customer_id,
                stripe_subscription_id = EXCLUDED.stripe_subscription_id, stripe_price_id = EXCLUDED.stripe_price_id,
-               status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end, updated_at = now()`,
+               status = EXCLUDED.status, current_period_end = EXCLUDED.current_period_end,
+               checkout_attempt_key = NULL, checkout_plan = NULL, checkout_session_id = NULL,
+               checkout_expires_at = NULL, updated_at = now()`,
             [workspaceId, customerId, subscriptionId, priceId, status, periodEnd]
           );
           await client.query(
@@ -739,24 +742,75 @@ function createApp({
     if (!["Starter", "Growth"].includes(plan) || typeof priceId !== "string" || !priceId.startsWith("price_")) {
       return res.status(400).json({ error: "Choose an available subscription plan." });
     }
-    const existing = await pool.query(
-      "SELECT status FROM workspace_subscriptions WHERE workspace_id = $1",
-      [req.params.workspaceId]
-    );
-    if (existing.rows[0] && ["active", "trialing", "past_due"].includes(existing.rows[0].status)) {
-      return res.status(409).json({ error: "This workspace already has a subscription. Use billing management instead." });
+    const client = await pool.connect();
+    let checkoutAttemptKey;
+    let customerId;
+    try {
+      await client.query("BEGIN");
+      const workspace = await client.query(
+        "SELECT id FROM workspaces WHERE id = $1 FOR UPDATE",
+        [req.params.workspaceId]
+      );
+      if (!workspace.rows[0]) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Workspace not found." });
+      }
+      const existing = await client.query(
+        `SELECT status, stripe_customer_id, checkout_attempt_key, checkout_plan, checkout_expires_at
+         FROM workspace_subscriptions WHERE workspace_id = $1 FOR UPDATE`,
+        [req.params.workspaceId]
+      );
+      const subscription = existing.rows[0];
+      if (subscription && ["active", "trialing", "past_due"].includes(subscription.status)) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "This workspace already has a subscription. Use billing management instead." });
+      }
+      if (subscription && subscription.checkout_attempt_key && subscription.checkout_expires_at
+        && new Date(subscription.checkout_expires_at) > new Date()) {
+        if (subscription.checkout_plan !== plan) {
+          await client.query("ROLLBACK");
+          return res.status(409).json({ error: "A checkout is already in progress for this workspace. Complete or wait for it to expire first." });
+        }
+        checkoutAttemptKey = subscription.checkout_attempt_key;
+      } else {
+        checkoutAttemptKey = crypto.randomUUID();
+        await client.query(
+          `INSERT INTO workspace_subscriptions
+             (workspace_id, checkout_attempt_key, checkout_plan, checkout_expires_at, updated_at)
+           VALUES ($1, $2, $3, now() + interval '24 hours', now())
+           ON CONFLICT (workspace_id) DO UPDATE SET checkout_attempt_key = EXCLUDED.checkout_attempt_key,
+             checkout_plan = EXCLUDED.checkout_plan, checkout_session_id = NULL,
+             checkout_expires_at = EXCLUDED.checkout_expires_at, updated_at = now()`,
+          [req.params.workspaceId, checkoutAttemptKey, plan]
+        );
+      }
+      customerId = subscription && subscription.stripe_customer_id;
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
     }
+
     const checkout = await stripeClient.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: priceId, quantity: 1 }],
       client_reference_id: req.params.workspaceId,
-      customer_email: req.membership.email,
+      ...(customerId ? { customer: customerId } : { customer_email: req.membership.email }),
       metadata: { workspace_id: req.params.workspaceId, plan },
       subscription_data: { metadata: { workspace_id: req.params.workspaceId, plan } },
       success_url: new URL("/?billing=success", canonicalAppOrigin).toString(),
       cancel_url: new URL("/?billing=cancel", canonicalAppOrigin).toString()
-    });
-    if (!checkout.url) return res.status(502).json({ error: "Stripe did not return a checkout URL." });
+    }, { idempotencyKey: `rankforge_checkout_${checkoutAttemptKey}` });
+    if (checkout.status !== "open" || !checkout.url) {
+      return res.status(409).json({ error: "This checkout is no longer open. Refresh the billing page and try again." });
+    }
+    await pool.query(
+      `UPDATE workspace_subscriptions SET checkout_session_id = $1, checkout_expires_at = $2, updated_at = now()
+       WHERE workspace_id = $3 AND checkout_attempt_key = $4`,
+      [checkout.id, new Date(checkout.expires_at * 1000), req.params.workspaceId, checkoutAttemptKey]
+    );
     res.json({ url: checkout.url });
   }));
 
@@ -1302,36 +1356,35 @@ async function start() {
   if (typeof process.env.SESSION_SECRET !== "string" || Buffer.byteLength(process.env.SESSION_SECRET) < 32) {
     throw new Error("SESSION_SECRET must contain at least 32 bytes.");
   }
-  if (production && process.env.DATABASE_SSL !== "true") {
-    throw new Error("Set DATABASE_SSL=true in production.");
-  }
-  const trustProxy = process.env.TRUST_PROXY
-    ? process.env.TRUST_PROXY.split(",").map((address) => address.trim()).filter(Boolean)
-    : false;
-  if (production && (!trustProxy || trustProxy.length === 0)) {
-    throw new Error("Set TRUST_PROXY to trusted proxy IP addresses in production.");
+  assertProductionDatabaseTls(process.env);
+  const trustProxy = resolveTrustProxy(process.env);
+  if (production && trustProxy === false) {
+    throw new Error("Configure a trusted HTTPS proxy in production.");
   }
   const port = Number(process.env.PORT || 3000);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("PORT must be an integer between 1 and 65535.");
   }
-  const appOrigin = process.env.APP_ORIGIN || `http://localhost:${port}`;
-  if (production && (!process.env.APP_ORIGIN || !process.env.SMTP_URL || !process.env.EMAIL_FROM
+  const appOrigin = process.env.APP_ORIGIN
+    || (process.env.RENDER === "true" && process.env.RENDER_EXTERNAL_URL)
+    || `http://localhost:${port}`;
+  if (production && (!(process.env.APP_ORIGIN || (process.env.RENDER === "true" && process.env.RENDER_EXTERNAL_URL))
+    || !process.env.SMTP_URL || !process.env.EMAIL_FROM
     || !process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET
     || !process.env.STRIPE_STARTER_PRICE_ID || !process.env.STRIPE_GROWTH_PRICE_ID)) {
     throw new Error("APP_ORIGIN, SMTP_URL, EMAIL_FROM, and Stripe secret, webhook, and plan price IDs are required in production.");
   }
   const mailer = createVerificationMailer(process.env.SMTP_URL, process.env.EMAIL_FROM);
   const stripeClient = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: true } : undefined
+  const pool = new Pool(createPostgresPoolConfig(process.env));
+  pool.on("error", (error) => {
+    console.error("Unexpected PostgreSQL pool error:", error.message);
   });
   if (production) {
     try {
       const migrationTable = await pool.query("SELECT to_regclass('public.schema_migrations') AS name");
       if (!migrationTable.rows[0].name) throw new Error("Run npm run db:migrate before starting the production server.");
-      const migration = await pool.query("SELECT 1 FROM schema_migrations WHERE version = $1", ["001_initial"]);
+      const migration = await pool.query("SELECT 1 FROM schema_migrations WHERE version = $1", [CURRENT_SCHEMA_VERSION]);
       if (!migration.rows[0]) throw new Error("Run npm run db:migrate before starting the production server.");
     } catch (error) {
       await pool.end();
@@ -1339,7 +1392,7 @@ async function start() {
     }
   } else {
     try {
-      await pool.query(schema);
+      await applyMigrations(pool);
     } catch (error) {
       await pool.end();
       throw error;
@@ -1362,13 +1415,40 @@ async function start() {
       Growth: process.env.STRIPE_GROWTH_PRICE_ID
     }
   });
-  const server = app.listen(port, () => console.log(`RankForge AI listening on port ${port}`));
-  const shutdown = () => server.close(async () => {
-    await pool.end();
-    process.exit(0);
-  });
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  const server = app.listen(port, "0.0.0.0", () => console.log(`RankForge AI listening on port ${port}`));
+  server.headersTimeout = 10000;
+  server.requestTimeout = 30000;
+  server.keepAliveTimeout = 5000;
+  let shuttingDown = false;
+  let poolShutdownStarted = false;
+  const closePool = async () => {
+    if (poolShutdownStarted) return;
+    poolShutdownStarted = true;
+    try {
+      await pool.end();
+    } catch (error) {
+      console.error("PostgreSQL pool shutdown failed:", error.message);
+      process.exitCode = 1;
+    }
+  };
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}; shutting down.`);
+    const forceShutdown = setTimeout(() => {
+      console.error("Graceful shutdown timed out.");
+      server.closeAllConnections();
+      closePool();
+      process.exitCode = 1;
+    }, 10000);
+    forceShutdown.unref();
+    server.close(async () => {
+      clearTimeout(forceShutdown);
+      await closePool();
+    });
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 if (require.main === module) {

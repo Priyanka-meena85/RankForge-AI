@@ -7,10 +7,11 @@
   "scripts": {
     "start": "node server.js",
     "db:migrate": "node scripts/migrate.js",
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node --check server.js && node --check app.js && node --check db/postgres.js && node --check db/migrations.js && node --check scripts/migrate.js && node --check test/security.test.js && node --check test/database-config.test.js && node --check test/postgres.integration.test.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22 <25"
   },
   "dependencies": {
     "argon2": "^0.45.2",

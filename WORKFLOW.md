@@ -4,10 +4,10 @@ The authenticated workspace stores topics, drafts, review decisions, invitations
 
 ## 1. Start the app
 
-Configure PostgreSQL, copy `.env.example` to `.env`, and set the database URL, a unique session secret (at least 32 bytes), SMTP URL/sender, and app origin. Then:
+Use Node.js 22 or 24. Configure PostgreSQL, copy `.env.example` to `.env`, and set the database URL, a unique session secret (at least 32 bytes), SMTP URL/sender, and app origin. Then:
 
 ```powershell
-npm install
+npm ci
 npm start
 ```
 
@@ -48,11 +48,26 @@ Billing integration does not itself enforce every product entitlement or usage q
 
 ## 6. Production deployment checklist
 
-1. Provision PostgreSQL with TLS and network access restricted to the application.
-2. Configure `NODE_ENV=production`, `DATABASE_SSL=true`, `APP_ORIGIN` as HTTPS, SMTP, Stripe keys/price IDs, a strong secret-manager session key, and `TRUST_PROXY` with only the exact trusted proxy IPs/CIDRs.
-3. Terminate TLS at that proxy and prevent direct public access to the application port.
-4. Run `npm run db:migrate`, then start the server. Production startup refuses an unconfigured database, proxy, SMTP, Stripe, or migration.
-5. Configure backups and practice restore, monitor readiness, set alerting, and define retention, privacy, access-revocation, and incident-response procedures.
-6. Validate with the real PostgreSQL, email, Stripe, and hosting setup. `npm test` uses fakes and does not prove provider or deployment readiness.
+### Render
 
-The application does not configure PostgreSQL row-level security, comprehensive audit coverage, backup/restore, centralized monitoring, or full entitlement metering. Complete a security/deployment review before using the service with customer data.
+1. Create a paid Render web service from the repository's [Dockerfile](./Dockerfile) and a PostgreSQL database in the same region.
+2. Set `/health/ready` as the HTTP health-check path and `npm run db:migrate` as the pre-deploy command.
+3. Use the database internal URL with `DATABASE_SSL_MODE=require`. Render is detected automatically for proxy trust; the application accepts its HTTPS-terminated ingress and rejects direct HTTP for application routes.
+4. Set `APP_ORIGIN` to the canonical HTTPS origin (custom domain if configured), `SESSION_SECRET` to a generated secret, and configure SMTP and Stripe secrets/price IDs in Render's secret environment-variable settings.
+5. Set `PG_POOL_MAX` to fit the database connection budget across the maximum number of service instances. Keep direct database access private.
+
+### Other hosts
+
+1. Provision PostgreSQL with TLS and network access restricted to the application.
+2. Configure `NODE_ENV=production`, `DATABASE_SSL_MODE=verify-full` where the CA is trusted (otherwise `require` for private provider endpoints), `APP_ORIGIN` as HTTPS, SMTP, Stripe keys/price IDs, and a secret-manager-provided session key.
+3. Set `TRUST_PROXY` to the exact trusted proxy IPs/CIDRs. Do not expose the application port publicly; terminate TLS at that proxy.
+4. Run `npm run db:migrate`, then start the container or `npm start`. Production startup refuses an unconfigured database, proxy, SMTP, Stripe, or migration.
+
+### Release checks
+
+1. Run `npm run check`, `npm test`, and `npm audit --omit=dev`. CI runs the same checks against a temporary PostgreSQL 16 service.
+2. For local real-database checks, set `TEST_DATABASE_URL` only to a disposable database whose name ends with `_test`; the integration test creates and removes test records.
+3. Configure backups/PITR, complete a restore drill, monitor readiness, set alerting, and define retention, privacy, access revocation, and incident response.
+4. Validate the real SMTP, Stripe webhook, checkout/portal, hosting, and custom-domain flows. Automated tests use simulated mail and Stripe providers.
+
+The application does not configure PostgreSQL row-level security, comprehensive audit coverage, backup/restore, centralized monitoring, customer data export/deletion, or full entitlement metering. Complete legal/privacy review and an independent security/deployment review before using the service with customer data.

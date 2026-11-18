@@ -94,6 +94,9 @@ function createFakePool() {
     if (statement.startsWith("select name from workspaces where id")) {
       return { rows: workspaces.filter((workspace) => workspace.id === values[0]).map(({ name }) => ({ name })) };
     }
+    if (statement.startsWith("select id from workspaces where id = $1 for update")) {
+      return { rows: workspaces.filter((workspace) => workspace.id === values[0]).map(({ id }) => ({ id })) };
+    }
     if (statement.startsWith("select name from users where id")) {
       return { rows: users.filter((user) => user.id === values[0]).map(({ name }) => ({ name })) };
     }
@@ -267,6 +270,19 @@ function createFakePool() {
       stripeEvents.push(values[0]);
       return { rows: [{ event_id: values[0] }] };
     }
+    if (statement.startsWith("insert into workspace_subscriptions (workspace_id, checkout_attempt_key")) {
+      const current = subscriptions.find((item) => item.workspace_id === values[0]);
+      const checkout = {
+        workspace_id: values[0],
+        status: current ? current.status : "inactive",
+        checkout_attempt_key: values[1],
+        checkout_plan: values[2],
+        checkout_expires_at: values[3]
+      };
+      if (current) Object.assign(current, checkout);
+      else subscriptions.push(checkout);
+      return { rows: [] };
+    }
     if (statement.startsWith("insert into workspace_subscriptions")) {
       const current = subscriptions.find((item) => item.workspace_id === values[0]);
       const subscription = {
@@ -277,8 +293,32 @@ function createFakePool() {
         status: values[4],
         current_period_end: values[5]
       };
-      if (current) Object.assign(current, subscription);
+      if (current) Object.assign(current, subscription, {
+        checkout_attempt_key: null,
+        checkout_plan: null,
+        checkout_session_id: null,
+        checkout_expires_at: null
+      });
       else subscriptions.push(subscription);
+      return { rows: [] };
+    }
+    if (statement.startsWith("select status, stripe_customer_id, checkout_attempt_key, checkout_plan, checkout_expires_at from workspace_subscriptions")) {
+      return { rows: subscriptions
+        .filter((item) => item.workspace_id === values[0])
+        .map(({ status, stripe_customer_id, checkout_attempt_key, checkout_plan, checkout_expires_at }) => ({
+          status,
+          stripe_customer_id,
+          checkout_attempt_key,
+          checkout_plan,
+          checkout_expires_at
+        })) };
+    }
+    if (statement.startsWith("update workspace_subscriptions set checkout_session_id")) {
+      const subscription = subscriptions.find((item) => item.workspace_id === values[2] && item.checkout_attempt_key === values[3]);
+      if (subscription) {
+        subscription.checkout_session_id = values[0];
+        subscription.checkout_expires_at = values[1];
+      }
       return { rows: [] };
     }
     if (statement.startsWith("select status, current_period_end from workspace_subscriptions")) {
@@ -537,6 +577,8 @@ test("production requires HTTPS and trusts only configured proxy addresses", asy
   assert.equal(direct.status, 426);
   const spoofedProxyHeader = await fetch(`${baseUrl}/`, { headers: { "X-Forwarded-Proto": "https" } });
   assert.equal(spoofedProxyHeader.status, 426);
+  const healthProbe = await fetch(`${baseUrl}/health/ready`);
+  assert.equal(healthProbe.status, 200);
 
   app.set("trust proxy", "loopback");
   const trustedProxy = await fetch(`${baseUrl}/`, { headers: { "X-Forwarded-Proto": "https" } });
@@ -818,6 +860,52 @@ test("workspace invitations are single-use, role-bound, and tied to the invited 
   const newMemberAccount = await apiRequest(baseUrl, newMember, "/api/me");
   assert.equal(newMemberAccount.response.status, 200);
   assert.ok(newMemberAccount.body.workspaces.some((workspace) => workspace.id === workspaceId));
+});
+
+test("Stripe checkout retries reuse one idempotency key and reject conflicting plans", async (t) => {
+  const sentEmails = [];
+  const checkoutCalls = [];
+  const sessionsByKey = new Map();
+  const stripeClient = {
+    checkout: {
+      sessions: {
+        create: async (params, options) => {
+          checkoutCalls.push({ params, options });
+          if (!sessionsByKey.has(options.idempotencyKey)) {
+            sessionsByKey.set(options.idempotencyKey, {
+              id: `cs_${sessionsByKey.size + 1}`,
+              url: `https://checkout.stripe.test/${sessionsByKey.size + 1}`,
+              status: "open",
+              expires_at: Math.floor(Date.now() / 1000) + 3600
+            });
+          }
+          return sessionsByKey.get(options.idempotencyKey);
+        }
+      }
+    }
+  };
+  const baseUrl = await startTestServer(t, createFakePool(), sentEmails, {
+    stripeClient,
+    stripePriceIds: { Starter: "price_starter", Growth: "price_growth" }
+  });
+  await registerAccount(baseUrl, "checkout@example.com", "Checkout workspace");
+  await verifyAccount(baseUrl, getLinkToken(sentEmails[0].url, "verify"));
+  const login = await loginAccount(baseUrl, "checkout@example.com", "correct horse battery staple");
+  const owner = { ...login.body, cookie: login.cookie };
+  const account = await apiRequest(baseUrl, owner, "/api/me");
+  const workspaceId = account.body.workspaces[0].id;
+
+  const first = await apiRequest(baseUrl, owner, `/api/workspaces/${workspaceId}/billing/checkout`, "POST", { plan: "Starter" });
+  const retry = await apiRequest(baseUrl, owner, `/api/workspaces/${workspaceId}/billing/checkout`, "POST", { plan: "Starter" });
+  assert.equal(first.response.status, 200);
+  assert.equal(retry.response.status, 200);
+  assert.equal(retry.body.url, first.body.url);
+  assert.equal(sessionsByKey.size, 1);
+  assert.equal(checkoutCalls[0].options.idempotencyKey, checkoutCalls[1].options.idempotencyKey);
+
+  const conflicting = await apiRequest(baseUrl, owner, `/api/workspaces/${workspaceId}/billing/checkout`, "POST", { plan: "Growth" });
+  assert.equal(conflicting.response.status, 409);
+  assert.equal(sessionsByKey.size, 1);
 });
 
 test("Stripe webhooks require signatures, deduplicate events, and update subscription state", async (t) => {

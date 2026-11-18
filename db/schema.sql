@@ -148,8 +148,22 @@ CREATE TABLE IF NOT EXISTS workspace_subscriptions (
   stripe_price_id TEXT,
   status TEXT NOT NULL DEFAULT 'inactive',
   current_period_end TIMESTAMPTZ,
+  checkout_attempt_key TEXT UNIQUE,
+  checkout_plan TEXT CHECK (checkout_plan IN ('Starter', 'Growth')),
+  checkout_session_id TEXT UNIQUE,
+  checkout_expires_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE workspace_subscriptions ADD COLUMN IF NOT EXISTS checkout_attempt_key TEXT;
+ALTER TABLE workspace_subscriptions ADD COLUMN IF NOT EXISTS checkout_plan TEXT;
+ALTER TABLE workspace_subscriptions ADD COLUMN IF NOT EXISTS checkout_session_id TEXT;
+ALTER TABLE workspace_subscriptions ADD COLUMN IF NOT EXISTS checkout_expires_at TIMESTAMPTZ;
+
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_subscriptions_checkout_attempt_key_idx
+  ON workspace_subscriptions(checkout_attempt_key);
+CREATE UNIQUE INDEX IF NOT EXISTS workspace_subscriptions_checkout_session_id_idx
+  ON workspace_subscriptions(checkout_session_id);
 
 CREATE TABLE IF NOT EXISTS stripe_webhook_events (
   event_id TEXT PRIMARY KEY,

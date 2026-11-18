@@ -10,6 +10,40 @@ const authGate = document.getElementById("authGate");
 const productApp = document.getElementById("productApp");
 const storageKey = "rankforge-ai-demo";
 const legacyStorageKey = "forgeflow-demo";
+let csrfToken = null;
+
+async function loadCsrfToken() {
+  const response = await fetch("/api/csrf", { credentials: "same-origin", cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not start a secure session.");
+  csrfToken = result.csrfToken;
+}
+
+async function apiRequest(path, options = {}) {
+  const method = options.method || "GET";
+  const headers = { Accept: "application/json" };
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (method !== "GET" && method !== "HEAD") {
+    if (!csrfToken) await loadCsrfToken();
+    headers["X-CSRF-Token"] = csrfToken;
+  }
+  const response = await fetch(`/api${path}`, {
+    method,
+    credentials: "same-origin",
+    cache: "no-store",
+    headers,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  });
+  if (response.status === 204) return null;
+  const result = await response.json();
+  if (!response.ok) {
+    const error = new Error(result.error || "The request could not be completed.");
+    error.status = response.status;
+    throw error;
+  }
+  if (result.csrfToken) csrfToken = result.csrfToken;
+  return result;
+}
 
 const state = {
   user: null,
@@ -62,6 +96,11 @@ const state = {
     { title: "Weld inspection defect detection", batch: "Automotive · Quality", date: "May 19, 2025", status: "Exported", schema: "Article · HowTo" },
     { title: "CIP process downtime monitoring", batch: "Food & Beverage · PdM", date: "May 17, 2025", status: "Exported", schema: "Article · FAQPage" }
   ],
+  drafts: [],
+  feedback: [],
+  activeDraftId: null,
+  billingPlans: [],
+  billingStatus: null,
   verticals: [
     { name: "Automotive", icon: "🚘", count: "Explore topics", desc: "Stamping, paint & weld defects, warranty analytics, IATF and APQP." },
     { name: "Steel", icon: "🏭", count: "Explore topics", desc: "EAF energy, continuous casting quality and predictive maintenance." },
@@ -103,17 +142,30 @@ function currentWorkspace() {
   return state.workspaces.find((workspace) => workspace.id === state.activeWorkspaceId) || state.workspaces[0];
 }
 
+function currentDraft() {
+  return state.drafts.find((draft) => draft.id === state.activeDraftId) || null;
+}
+
 function persistState() {
+  if (!state.user || !state.user.demo) return;
   try {
     saveCurrentWorkspaceData();
     localStorage.setItem(storageKey, JSON.stringify({
       user: state.user,
+      view: state.view,
       activeWorkspaceId: state.activeWorkspaceId,
       workspaces: state.workspaces,
       members: state.members,
       clients: state.clients,
       workspaceData: state.workspaceData,
       userDirectory: state.userDirectory,
+      selectedVertical: state.selectedVertical,
+      topicFilter: state.topicFilter,
+      search: state.search,
+      qaPatched: state.qaPatched,
+      approved: state.approved,
+      reviewTab: state.reviewTab,
+      activeEditorTab: state.activeEditorTab,
       topics: state.topics,
       batches: state.batches,
       pages: state.pages
@@ -141,6 +193,11 @@ function loadWorkspaceData(workspaceId) {
     state.topics = [];
     state.batches = [];
     state.pages = [];
+    state.drafts = [];
+    state.feedback = [];
+    state.activeDraftId = null;
+    state.billingPlans = [];
+    state.billingStatus = null;
     state.members = [{ name: state.user ? state.user.name : "Workspace owner", email: state.user ? state.user.email : "", role: "Owner", status: "Active" }];
     state.clients = [];
     return;
@@ -152,18 +209,62 @@ function loadWorkspaceData(workspaceId) {
   state.clients = data.clients;
 }
 
+function activateWorkspace(workspace) {
+  if (!workspace) return;
+  state.activeWorkspaceId = workspace.id;
+  if (state.user && state.user.demo) {
+    loadWorkspaceData(workspace.id);
+  } else {
+    state.topics = [];
+    state.batches = [];
+    state.pages = [];
+    state.drafts = [];
+    state.feedback = [];
+    state.activeDraftId = null;
+    state.billingPlans = [];
+    state.billingStatus = null;
+    state.members = [];
+    state.clients = [];
+  }
+  updateWorkspaceChrome();
+}
+
+async function refreshWorkspaceContent(workspaceId = state.activeWorkspaceId) {
+  if (!state.user || state.user.demo || !workspaceId) return;
+  const result = await apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/content`);
+  if (state.activeWorkspaceId !== workspaceId) return;
+  state.topics = result.topics;
+  state.drafts = result.drafts;
+  state.feedback = result.feedback;
+  if (!state.drafts.some((draft) => draft.id === state.activeDraftId)) {
+    state.activeDraftId = state.drafts[0] ? state.drafts[0].id : null;
+  }
+  if (state.activeDraftId) {
+    const index = state.drafts.findIndex((draft) => draft.id === state.activeDraftId);
+    state.drafts[index] = await apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/drafts/${encodeURIComponent(state.activeDraftId)}`);
+  }
+  state.pages = state.drafts
+    .filter((draft) => draft.status === "Approved")
+    .map((draft) => ({ title: draft.title, batch: "", date: "", status: "Approved", schema: "Article" }));
+}
+
 function restoreState() {
   try {
     const saved = localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey);
     if (!saved) return false;
     const data = JSON.parse(saved);
     if (!data || !Array.isArray(data.workspaces) || !data.workspaces.length) return false;
+    if (!data.user || !data.user.demo) {
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(legacyStorageKey);
+      return false;
+    }
     Object.assign(state, data);
     if (!localStorage.getItem(storageKey)) {
       localStorage.setItem(storageKey, saved);
       localStorage.removeItem(legacyStorageKey);
     }
-    return Boolean(state.user);
+    return true;
   } catch (error) {
     showToast("Saved browser data could not be read. Start a fresh preview or account.");
     return false;
@@ -228,10 +329,10 @@ function renderPublicSite() {
         <div class="workflow-board"><div class="board-header"><div><span class="board-eyebrow">FOOD &amp; BEVERAGE · PDM</span><h3>Batch review workflow</h3></div><span class="board-avatar-stack"><i>AM</i><i>PS</i><i>JL</i><b>+2</b></span></div><div class="board-steps"><div class="board-step done"><span>${icon("check")}</span><div><b>Topic batch approved</b><small>12 topics · Alex Morgan · 9:42 AM</small></div><em>Done</em></div><div class="board-step done"><span>${icon("check")}</span><div><b>Drafts generated &amp; checked</b><small>Rule checks complete · 11:08 AM</small></div><em>Done</em></div><div class="board-step current"><span>3</span><div><b>Technical review</b><small>4 pages ready · Priya Shah</small></div><em>In progress</em></div><div class="board-step"><span>4</span><div><b>Final approval &amp; export</b><small>Owner approval required</small></div><em>Up next</em></div></div><div class="board-footer"><span>${icon("clock")} Activity is visible to workspace members</span><span>Open review →</span></div></div>
       </section>
       <section class="industry-section" id="industries"><div class="section-intro centered"><span class="hero-kicker">INDUSTRIAL CONTEXT, BUILT IN</span><h2>A starting point for specialized teams.</h2><p>Explore a curated taxonomy across manufacturing and industrial technology workflows.</p></div><div class="industry-chips">${state.verticals.map((vertical) => `<span><i>${vertical.icon}</i>${escapeHtml(vertical.name)}</span>`).join("")}</div></section>
-      <section class="pricing-section" id="pricingSection"><div class="section-intro centered"><span class="hero-kicker">A CLEAR STARTING POINT</span><h2>Plans that grow with your workflow.</h2><p>Indicative launch pricing from the project brief. Confirm final limits and terms before accepting payment.</p></div><div class="pricing-grid"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><p>Build and review your first industrial content batches.</p><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Up to 20 pages per month</li><li>${icon("check")} 1 domain</li><li>${icon("check")} Industrial topic library</li><li>${icon("check")} Review &amp; HTML export</li></ul><button class="button" data-public-action="signup">Create a workspace ${icon("arrow")}</button></article><article class="pricing-card featured"><span class="pricing-popular">GROWING TEAMS</span><span class="pricing-name">GROWTH</span><h3>For a scaling content operation</h3><p>Coordinate a higher volume of pages across more sites.</p><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Up to 100 pages per month</li><li>${icon("check")} Up to 3 domains</li><li>${icon("check")} Shared team review</li><li>${icon("check")} Analytics planned for V1</li></ul><button class="button primary" data-public-action="signup">Get started ${icon("arrow")}</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client teams</h3><p>Keep client projects organized with a setup designed for agencies.</p><div class="price custom-price">Let's talk</div><ul><li>${icon("check")} Multi-client workspaces</li><li>${icon("check")} Role-based client access</li><li>${icon("check")} White-label planned for V1</li><li>${icon("check")} Tailored page volume</li></ul><button class="button" data-public-action="signup">Talk to our team ${icon("arrow")}</button></article></div><p class="pricing-note">Indicative pricing is a starting point, not an active subscription offer. Billing is not connected in this prototype.</p></section>
+      <section class="pricing-section" id="pricingSection"><div class="section-intro centered"><span class="hero-kicker">A CLEAR STARTING POINT</span><h2>Plans that grow with your workflow.</h2><p>Indicative launch pricing from the project brief. Confirm final limits and terms before accepting payment.</p></div><div class="pricing-grid"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><p>Build and review your first industrial content batches.</p><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Up to 20 pages per month</li><li>${icon("check")} 1 domain</li><li>${icon("check")} Industrial topic library</li><li>${icon("check")} Review &amp; HTML export</li></ul><button class="button" data-public-action="signup">Create a workspace ${icon("arrow")}</button></article><article class="pricing-card featured"><span class="pricing-popular">GROWING TEAMS</span><span class="pricing-name">GROWTH</span><h3>For a scaling content operation</h3><p>Coordinate a higher volume of pages across more sites.</p><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Up to 100 pages per month</li><li>${icon("check")} Up to 3 domains</li><li>${icon("check")} Shared team review</li><li>${icon("check")} Analytics planned for V1</li></ul><button class="button primary" data-public-action="signup">Get started ${icon("arrow")}</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client teams</h3><p>Keep client projects organized with a setup designed for agencies.</p><div class="price custom-price">Let's talk</div><ul><li>${icon("check")} Multi-client workspaces</li><li>${icon("check")} Role-based client access</li><li>${icon("check")} White-label planned for V1</li><li>${icon("check")} Tailored page volume</li></ul><button class="button" data-public-action="signup">Talk to our team ${icon("arrow")}</button></article></div><p class="pricing-note">Indicative pricing is a starting point, not an active subscription offer. Stripe Checkout is available to workspace owners when configured.</p></section>
       <section class="final-cta"><div><span class="hero-kicker">READY TO GET ORGANIZED?</span><h2>Give your industrial content<br/>a better production system.</h2><p>Create a workspace, set your context, and invite the people who move pages forward.</p></div><button class="button primary hero-button" data-public-action="signup">Create your workspace ${icon("arrow")}</button></section>
     </main>
-    <footer class="marketing-footer"><a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a><span>Industrial content, engineered.</span><span>Prototype experience · No live billing or authentication</span></footer>`;
+    <footer class="marketing-footer"><a class="brand marketing-brand" href="#"><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></a><span>Industrial content, engineered.</span><span>Server-backed accounts &amp; workspaces · Prototype content</span></footer>`;
 }
 
 function showAuth(mode = "signup") {
@@ -246,69 +347,207 @@ function showAuth(mode = "signup") {
 
 function renderAuth(mode) {
   const isSignup = mode === "signup";
-  return `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-intro"><span class="hero-kicker">YOUR INDUSTRIAL CONTENT WORKSPACE</span><h1>${isSignup ? "Start with a workspace." : "Welcome back."}</h1><p>${isSignup ? "Set up your organization and invite your team when you're ready. Your workspace is scoped to your projects." : "Sign in to pick up where your team left off."}</p><div class="auth-benefit">${icon("check")} Your team, roles, and projects in one place</div><div class="auth-benefit">${icon("check")} Separate client workspaces for agency teams</div><div class="auth-benefit">${icon("check")} Clear review and approval handoffs</div><div class="auth-note">This interactive prototype stores account data in this browser only. It does not provide production authentication or server-side data isolation.</div></section><section class="auth-card"><div class="auth-toggle"><button class="${isSignup ? "active" : ""}" data-auth-mode="signup">Create account</button><button class="${!isSignup ? "active" : ""}" data-auth-mode="login">Log in</button></div><h2>${isSignup ? "Create your team workspace" : "Log in to your workspace"}</h2><p>${isSignup ? "Start with your details. You can invite teammates next." : "Use the email address saved in this browser prototype."}</p><div class="auth-error" id="authError" hidden></div>${isSignup ? `<div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" placeholder="e.g. Alex Morgan" required /></div>` : ""}<div class="settings-field"><label for="authEmail">Work email</label><input id="authEmail" type="email" autocomplete="email" placeholder="you@company.com" required /></div>${isSignup ? `<div class="settings-field"><label for="authCompany">Company / workspace name</label><input id="authCompany" autocomplete="organization" placeholder="e.g. Northstar Manufacturing" required /></div><div class="auth-fields-row"><div class="settings-field"><label for="authIndustry">Industry</label><select id="authIndustry">${state.verticals.map((v) => `<option>${escapeHtml(v.name)}</option>`).join("")}<option>Other industrial / technical</option></select></div><div class="settings-field"><label for="authTeamType">Team type</label><select id="authTeamType"><option>Industrial SaaS team</option><option>In-house marketing</option><option>Agency</option></select></div></div><label class="auth-consent"><input type="checkbox" id="authConsent" checked /> I agree to the prototype experience and understand data stays in this browser.</label>` : ""}<button class="button primary auth-submit" data-auth-action="${isSignup ? "signup" : "login"}">${isSignup ? "Create workspace" : "Continue"} ${icon("arrow")}</button><div class="auth-divider"><span>OR</span></div><button class="button auth-demo" data-auth-action="demo">${icon("grid")} Explore a sample workspace</button><small class="auth-disclaimer">No email is sent. No payment is collected. Authentication and billing must be connected before launch.</small></section></div></div>`;
+  return `
+    <div class="auth-page">
+      <div class="auth-topbar">
+        <button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button>
+        <button class="marketing-login" data-back-public>← Back to RankForge AI</button>
+      </div>
+      <div class="auth-layout">
+        <section class="auth-intro">
+          <span class="hero-kicker">YOUR INDUSTRIAL CONTENT WORKSPACE</span>
+          <h1>${isSignup ? "Start with a workspace." : "Welcome back."}</h1>
+          <p>${isSignup ? "Set up your organization and invite your team when you're ready. Your workspace is scoped to your projects." : "Sign in to pick up where your team left off."}</p>
+          <div class="auth-benefit">${icon("check")} Your team, roles, and projects in one place</div>
+          <div class="auth-benefit">${icon("check")} Separate client workspaces for agency teams</div>
+          <div class="auth-benefit">${icon("check")} Clear review and approval handoffs</div>
+          <div class="auth-note">Your account, workspace topics, drafts, review decisions, and membership roles are stored and authorized by the server. Stripe billing is available when configured; AI generation is not connected.</div>
+        </section>
+        <section class="auth-card">
+          <div class="auth-toggle">
+            <button class="${isSignup ? "active" : ""}" data-auth-mode="signup">Create account</button>
+            <button class="${!isSignup ? "active" : ""}" data-auth-mode="login">Log in</button>
+          </div>
+          <h2>${isSignup ? "Create your team workspace" : "Log in to your workspace"}</h2>
+          <p>${isSignup ? "Create an account with a strong password." : "Sign in with your account email and password."}</p>
+          <div class="auth-error" id="authError" hidden></div>
+          ${isSignup ? `<div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" placeholder="e.g. Alex Morgan" required /></div>` : ""}
+          <div class="settings-field">
+            <label for="authEmail">Work email</label>
+            <input id="authEmail" type="email" autocomplete="email" placeholder="you@company.com" required />
+          </div>
+          <div class="settings-field">
+            <label for="authPassword">Password</label>
+            <input id="authPassword" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" minlength="${isSignup ? "12" : "1"}" maxlength="128" required />
+            ${isSignup ? `<small>Use at least 12 characters.</small>` : ""}
+          </div>
+          ${isSignup ? `<div class="settings-field"><label for="authCompany">Company / workspace name</label><input id="authCompany" autocomplete="organization" placeholder="e.g. Northstar Manufacturing" required /></div><div class="settings-field"><label for="authIndustry">Industry</label><select id="authIndustry">${state.verticals.map((v) => `<option>${escapeHtml(v.name)}</option>`).join("")}<option>Other industrial / technical</option></select></div>` : ""}
+          <button class="button primary auth-submit" data-auth-action="${isSignup ? "signup" : "login"}">${isSignup ? "Create workspace" : "Continue"} ${icon("arrow")}</button>
+          ${!isSignup ? `<button class="text-button" data-auth-action="forgot-password">Forgot password?</button><button class="text-button" data-auth-action="resend-verification">Resend verification email</button>` : ""}
+          <div class="auth-divider"><span>OR</span></div>
+          <button class="button auth-demo" data-auth-action="demo">${icon("grid")} Explore a sample workspace</button>
+          <small class="auth-disclaimer">${sessionStorage.getItem("rankforge-pending-invitation") ? "Sign in using the invited email address to accept the workspace invitation." : "Email verification and password recovery links are sent to the address on your account."}</small>
+        </section>
+      </div>
+    </div>`;
 }
 
-function handleAuth(action) {
+function setAuthenticatedWorkspace(user, workspaces) {
+  state.user = user;
+  state.workspaces = workspaces;
+  state.activeWorkspaceId = workspaces[0] ? workspaces[0].id : "";
+  state.members = [];
+  state.clients = workspaces.filter((workspace) => workspace.kind === "client" || workspace.workspace_type === "client")
+    .map((workspace) => ({ id: workspace.id, name: workspace.name, vertical: workspace.industry, pages: 0, status: "Active" }));
+  state.topics = [];
+  state.batches = [];
+  state.pages = [];
+  state.drafts = [];
+  state.feedback = [];
+  state.activeDraftId = null;
+  state.billingPlans = [];
+  state.billingStatus = null;
+  state.workspaceData = {};
+  state.userDirectory = [];
+  state.view = "dashboard";
+  state.selectedVertical = workspaces[0] && state.verticals.some((vertical) => vertical.name === workspaces[0].industry)
+    ? workspaces[0].industry
+    : "Food & Beverage";
+  state.topicFilter = "All topics";
+  state.search = "";
+  state.qaPatched = false;
+  state.approved = false;
+}
+
+async function handleAuth(action, invitationToken) {
   if (action === "demo") return startDemo();
   const error = document.getElementById("authError");
-  if (action === "signup") {
-    const name = document.getElementById("authName").value.trim();
-    const email = document.getElementById("authEmail").value.trim().toLowerCase();
-    const company = document.getElementById("authCompany").value.trim();
-    const industry = document.getElementById("authIndustry").value;
-    const teamType = document.getElementById("authTeamType").value;
-    if (!name || !email || !company || !email.includes("@")) {
-      error.textContent = "Enter your name, a valid work email, and a workspace name.";
+  const email = document.getElementById("authEmail").value.trim().toLowerCase();
+  const password = document.getElementById("authPassword").value;
+  try {
+    if (action === "register-invitation") {
+      const name = document.getElementById("authName").value.trim();
+      await apiRequest("/invitations/register", {
+        method: "POST",
+        body: { token: invitationToken, name, email, password }
+      });
+      sessionStorage.removeItem("rankforge-pending-invitation");
+      const account = await apiRequest("/me");
+      setAuthenticatedWorkspace(account.user, account.workspaces);
+      await refreshWorkspaceContent();
+      showProduct();
+      showToast("Account created and workspace invitation accepted.");
+      return;
+    }
+    if (action === "signup") {
+      const name = document.getElementById("authName").value.trim();
+      const workspaceName = document.getElementById("authCompany").value.trim();
+      const industry = document.getElementById("authIndustry").value;
+      const result = await apiRequest("/auth/register", {
+        method: "POST",
+        body: { name, email, password, workspaceName, industry }
+      });
+      showAuth("login");
+      document.getElementById("authEmail").value = email;
+      showToast(result.message);
+      return;
+    }
+    if (action === "resend-verification") {
+      const result = await apiRequest("/auth/resend-verification", { method: "POST", body: { email } });
+      error.textContent = result.message;
       error.hidden = false;
       return;
     }
-    if (!document.getElementById("authConsent").checked) {
-      error.textContent = "Please confirm you understand this is a local prototype before continuing.";
+    if (action === "forgot-password") {
+      const result = await apiRequest("/auth/forgot-password", { method: "POST", body: { email } });
+      error.textContent = result.message;
       error.hidden = false;
       return;
     }
-    if (state.userDirectory.some((user) => user.email === email)) {
-      error.textContent = "An account with this email already exists in this browser. Choose Log in.";
-      error.hidden = false;
-      return;
+    if (action === "login") {
+      const result = await apiRequest("/auth/login", { method: "POST", body: { email, password } });
+      const account = await apiRequest("/me");
+      setAuthenticatedWorkspace(account.user, account.workspaces);
+      if (sessionStorage.getItem("rankforge-pending-invitation")) {
+        await acceptPendingInvitation(account);
+      } else {
+        await refreshWorkspaceContent().catch((loadError) => showToast(loadError.message));
+      }
+      showProduct();
+      showToast("You are signed in.");
     }
-    state.user = { name, email };
-    state.activeWorkspaceId = `workspace-${Date.now()}`;
-    state.workspaces = [{ id: state.activeWorkspaceId, name: company, industry, plan: "Starter", role: "Owner", website: "", teamType }];
-    state.members = [{ name, email, role: "Owner", status: "Active" }];
-    state.clients = teamType === "Agency" ? [] : [];
-    state.userDirectory.push({ name, email, workspaceId: state.activeWorkspaceId });
-    state.topics = [];
-    state.batches = [];
-    state.pages = [];
-    state.selectedVertical = state.verticals.some((vertical) => vertical.name === industry) ? industry : "Food & Beverage";
-    state.topicFilter = "All topics";
-    state.search = "";
-    state.qaPatched = false;
-    state.approved = false;
-    state.workspaceData = {};
-    saveCurrentWorkspaceData();
-    persistState();
-    showProduct();
-    showToast("Workspace created in this browser. Connect a backend before using real customer data.");
-    setView("team");
-    return;
+  } catch (requestError) {
+    error.textContent = requestError.message;
+    error.hidden = false;
   }
-  if (action === "login") {
-    const email = document.getElementById("authEmail").value.trim().toLowerCase();
-    const user = state.userDirectory.find((item) => item.email === email);
-    if (!user) {
-      error.textContent = "No local prototype account found for that email. Create an account or explore the demo.";
+}
+
+function showEmailVerification(token) {
+  window.history.replaceState({}, "", window.location.pathname);
+  publicSite.hidden = true;
+  productApp.hidden = true;
+  authGate.hidden = false;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT VERIFICATION</span><h2>Verify your email address</h2><p>Confirm that you control this address to activate the account and its workspace.</p><div class="auth-error" id="authError" hidden></div><button class="button primary auth-submit" id="verifyEmailButton">Verify email</button></section></div></div>`;
+  authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
+  document.getElementById("verifyEmailButton").addEventListener("click", async () => {
+    const error = document.getElementById("authError");
+    try {
+      const result = await apiRequest("/auth/verify-email", { method: "POST", body: { token } });
+      window.history.replaceState({}, "", window.location.pathname);
+      showAuth("login");
+      showToast(result.message);
+    } catch (requestError) {
+      error.textContent = requestError.message;
       error.hidden = false;
-      return;
     }
-    state.user = { name: user.name, email: user.email };
-    state.activeWorkspaceId = user.workspaceId;
-    loadWorkspaceData(state.activeWorkspaceId);
-    persistState();
-    showProduct();
-    return;
+  });
+}
+
+function showPasswordReset(token) {
+  window.history.replaceState({}, "", window.location.pathname);
+  publicSite.hidden = true;
+  productApp.hidden = true;
+  authGate.hidden = false;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">ACCOUNT RECOVERY</span><h2>Choose a new password</h2><p>Use at least 12 characters. Reset links can only be used once.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="resetPassword">New password</label><input id="resetPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /></div><button class="button primary auth-submit" id="resetPasswordButton">Update password</button></section></div></div>`;
+  authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
+  document.getElementById("resetPasswordButton").addEventListener("click", async () => {
+    const error = document.getElementById("authError");
+    try {
+      const password = document.getElementById("resetPassword").value;
+      const result = await apiRequest("/auth/reset-password", { method: "POST", body: { token, password } });
+      showAuth("login");
+      showToast(result.message);
+    } catch (requestError) {
+      error.textContent = requestError.message;
+      error.hidden = false;
+    }
+  });
+}
+
+function showInvitationSignup(token) {
+  publicSite.hidden = true;
+  productApp.hidden = true;
+  authGate.hidden = false;
+  authGate.innerHTML = `<div class="auth-page"><div class="auth-topbar"><button class="brand marketing-brand" data-back-public><img class="brand-logo" src="assets/rankforge-ai-logo.png" alt="RankForge AI" /></button><button class="marketing-login" data-back-public>← Back to RankForge AI</button></div><div class="auth-layout"><section class="auth-card"><span class="hero-kicker">WORKSPACE INVITATION</span><h2>Join your team</h2><p>Enter the invited email address to create an account and accept this workspace invitation.</p><div class="auth-error" id="authError" hidden></div><div class="settings-field"><label for="authName">Your name</label><input id="authName" autocomplete="name" required /></div><div class="settings-field"><label for="authEmail">Invited email</label><input id="authEmail" type="email" autocomplete="email" required /></div><div class="settings-field"><label for="authPassword">Create password</label><input id="authPassword" type="password" autocomplete="new-password" minlength="12" maxlength="128" required /><small>Use at least 12 characters.</small></div><button class="button primary auth-submit" data-auth-action="register-invitation">Create account and join</button><button class="text-button" data-auth-mode="login">Already have an account? Sign in</button></section></div></div>`;
+  authGate.querySelectorAll("[data-back-public]").forEach((button) => button.addEventListener("click", showPublic));
+  authGate.querySelectorAll("[data-auth-action]").forEach((button) => button.addEventListener("click", () => handleAuth(button.dataset.authAction, token)));
+  authGate.querySelectorAll("[data-auth-mode]").forEach((button) => button.addEventListener("click", () => showAuth(button.dataset.authMode)));
+}
+
+async function acceptPendingInvitation() {
+  const token = sessionStorage.getItem("rankforge-pending-invitation");
+  if (!token) return;
+  try {
+    const accepted = await apiRequest("/invitations/accept", { method: "POST", body: { token } });
+    const account = await apiRequest("/me");
+    setAuthenticatedWorkspace(account.user, account.workspaces);
+    state.activeWorkspaceId = accepted.workspaceId;
+    await refreshWorkspaceContent();
+    showToast("Invitation accepted. You now have access to the workspace.");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    sessionStorage.removeItem("rankforge-pending-invitation");
   }
 }
 
@@ -365,7 +604,9 @@ function updateWorkspaceChrome() {
   document.querySelector(".profile-copy small").textContent = workspace ? workspace.role : "Owner";
   document.querySelector(".profile-avatar").textContent = state.user ? initials(state.user.name) : "FF";
   document.querySelector(".top-avatar").textContent = state.user ? initials(state.user.name) : "FF";
-  document.querySelector(".app-footer > span:last-child").textContent = state.user && state.user.demo ? "Demo workspace · Sample data" : "Browser prototype · Data stored locally";
+  document.querySelector(".app-footer > span:last-child").textContent = state.user && state.user.demo
+    ? "Demo workspace · Sample data"
+    : "Workspace content · PostgreSQL stored · Access checked per workspace";
 }
 
 function initials(name) {
@@ -392,12 +633,50 @@ function setView(view) {
   Object.assign(labels, { clients: "Client workspaces", team: "Team & access", plans: "Plan & usage" });
   breadcrumb.textContent = labels[view] || "Overview";
   render();
+  if (view === "team" && state.user && !state.user.demo) refreshWorkspaceMembers();
+  if (view === "plans" && state.user && !state.user.demo) {
+    const workspaceId = state.activeWorkspaceId;
+    Promise.all([
+      apiRequest("/billing/plans"),
+      apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/billing`)
+    ]).then(([plans, billing]) => {
+      if (state.activeWorkspaceId !== workspaceId || state.view !== "plans") return;
+      state.billingPlans = plans.plans;
+      state.billingStatus = billing;
+      render();
+    }).catch((error) => showToast(error.message));
+  }
 }
 
 function render() {
   const views = { dashboard: renderDashboard, topics: renderTopics, review: renderReview, published: renderPublished, settings: renderSettings, clients: renderClients, team: renderTeam, plans: renderPlans };
   appMain.innerHTML = (views[state.view] || renderDashboard)();
   bindPageEvents();
+}
+
+async function refreshWorkspaceMembers() {
+  const workspaceId = state.activeWorkspaceId;
+  try {
+    const [result, invitations] = await Promise.all([
+      apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/members`),
+      apiRequest(`/workspaces/${encodeURIComponent(workspaceId)}/invitations`)
+    ]);
+    if (state.activeWorkspaceId !== workspaceId || state.view !== "team") return;
+    state.members = result.members.concat(invitations.invitations.map((invitation) => ({
+      invitationId: invitation.id,
+      email: invitation.email,
+      role: invitation.role,
+      status: invitation.status,
+      name: null
+    })));
+    render();
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function canManageWorkspace() {
+  return Boolean(state.user && (state.user.demo || currentWorkspace() && ["Owner", "Admin"].includes(currentWorkspace().role)));
 }
 
 function renderDashboard() {
@@ -473,7 +752,7 @@ function renderTopics() {
         <div class="filter-tabs">${tabs.map((tab) => `<button class="filter-tab ${state.topicFilter === tab ? "active" : ""}" data-filter="${tab}">${tab}</button>`).join("")}</div>
         <div class="topic-toolbar" style="padding:12px 14px 0">
           <label class="search-box">${icon("search")}<input id="topicSearch" type="search" placeholder="Search equipment, pain points..." value="${escapeHtml(state.search)}" /></label>
-          <button class="button small" data-action="generate-selected">${icon("spark")} Generate selected</button>
+          <button class="button small" data-action="generate-selected">${icon("file")} ${state.user && state.user.demo ? "Generate selected" : "Create drafts from selection"}</button>
         </div>
         <div class="table-wrap">
           <table class="topic-table"><thead><tr><th><input class="table-checkbox" id="selectAll" type="checkbox" aria-label="Select all topics" /></th><th>TOPIC IDEA</th><th>EQUIPMENT</th><th>CONTENT TYPE</th><th>STATUS</th></tr></thead>
@@ -493,6 +772,12 @@ function renderTopics() {
         </div>
       </aside>
     </div>
+    ${state.batches.length ? `<section class="panel topics-batch-section"><div class="panel-heading"><div><h2>Active batches</h2><p>Track the batches in this workspace.</p></div><span class="phase-chip">${state.batches.length} batches</span></div><div class="batch-list">${state.batches.map((batch) => `
+      <div class="batch-row">
+        <div class="batch-title"><span class="batch-avatar ${escapeHtml(batch.className)}">${escapeHtml(batch.initials)}</span><div class="batch-title-copy"><strong>${escapeHtml(batch.name)}</strong><small>${escapeHtml(batch.detail)}</small></div></div>
+        <div class="progress-wrap"><div class="progress-label"><span>Progress</span><span>${batch.progress}%</span></div><div class="progress-track"><span style="width:${batch.progress}%"></span></div></div>
+        ${chip(batch.status)}<span class="batch-date">${escapeHtml(batch.date)}</span>
+      </div>`).join("")}</div></section>` : ""}
     <div style="margin-top:14px"><div class="section-title-row"><h2>Browse verticals</h2><span class="page-subtitle">Seeded library · sample topic counts</span></div>
       <div class="vertical-grid">${state.verticals.map((vertical) => `<article class="vertical-card ${state.selectedVertical === vertical.name ? "selected" : ""}" data-vertical="${escapeHtml(vertical.name)}"><div class="vertical-card-top"><span class="vertical-icon">${vertical.icon}</span><span class="topic-count">${vertical.count}</span></div><h3>${escapeHtml(vertical.name)}</h3><p>${escapeHtml(vertical.desc)}</p></article>`).join("")}</div>
     </div>`;
@@ -502,7 +787,7 @@ function renderNewWorkspaceDashboard() {
   const workspace = currentWorkspace();
   return `<div class="page-heading"><div><div class="eyebrow">YOUR WORKSPACE <span class="demo-chip">SETUP</span></div><h1>Welcome to RankForge AI, ${escapeHtml(state.user ? state.user.name.split(" ")[0] : "there")}.</h1><p class="page-subtitle">Your ${escapeHtml(workspace ? workspace.industry : "industrial")} workspace is ready. Add your team and start a first batch.</p></div><div class="heading-actions"><button class="button primary" data-action="new-batch">${icon("plus")} Create first batch</button></div></div>
     <div class="onboarding-progress"><div class="onboarding-progress-head"><div><span class="hero-kicker">WORKSPACE SETUP</span><h2>A few small steps to get your team moving.</h2></div><span>1 of 3 complete</span></div><div class="onboarding-track"><i style="width:33%"></i></div><div class="onboarding-steps"><button class="onboarding-step done" data-view="settings"><i>${icon("check")}</i><span><b>Workspace created</b><small>${escapeHtml(workspace ? workspace.name : "")}</small></span><em>Complete</em></button><button class="onboarding-step" data-view="team"><i>2</i><span><b>Invite your collaborators</b><small>Give writers and reviewers the right level of access.</small></span><em>Set up</em></button><button class="onboarding-step" data-view="topics"><i>3</i><span><b>Choose your first topics</b><small>Start with the pre-built industry taxonomy.</small></span><em>Set up</em></button></div></div>
-    <div class="dashboard-grid" style="margin-top:16px"><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Start with your team's expertise</h2><p>Configure this workspace before generating content.</p></div><span class="phase-chip">MVP WORKSPACE</span></div><div class="onboarding-feature-list"><div class="onboarding-feature">${icon("layers")}<span><b>Browse industrial topics</b><small>Equipment, pain points, and content types in one library.</small></span><button class="text-button" data-view="topics">Explore ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("grid")}<span><b>Invite teammates</b><small>Set owner, editor, reviewer, or client-viewer roles.</small></span><button class="text-button" data-view="team">Manage team ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("settings")}<span><b>Set your review guardrails</b><small>Brand context, approved links, and QA rules.</small></span><button class="text-button" data-view="settings">Configure ${icon("arrow")}</button></div></div></section><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Designed for real collaboration</h2><p>Your workspace starts private to you.</p></div></div><div class="onboarding-security">${icon("grid")}<b>One workspace for your organization</b><p>Keep projects together, then invite the right people to participate. You control reviewer and editor access.</p><div class="onboarding-data-note">Prototype note: this experience stores sample account data in this browser. Use a secure backend before adding real company or customer content.</div></div></section></div>`;
+    <div class="dashboard-grid" style="margin-top:16px"><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Start with your team's expertise</h2><p>Configure this workspace before generating content.</p></div><span class="phase-chip">MVP WORKSPACE</span></div><div class="onboarding-feature-list"><div class="onboarding-feature">${icon("layers")}<span><b>Browse industrial topics</b><small>Equipment, pain points, and content types in one library.</small></span><button class="text-button" data-view="topics">Explore ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("grid")}<span><b>Invite teammates</b><small>Give writers and reviewers the right level of access.</small></span><button class="text-button" data-view="team">Manage team ${icon("arrow")}</button></div><div class="onboarding-feature">${icon("settings")}<span><b>Set your review guardrails</b><small>Brand context, approved links, and QA rules.</small></span><button class="text-button" data-view="settings">Configure ${icon("arrow")}</button></div></div></section><section class="panel onboarding-panel"><div class="panel-heading"><div><h2>Designed for real collaboration</h2><p>Your workspace starts private to you.</p></div></div><div class="onboarding-security">${icon("grid")}<b>One workspace for your organization</b><p>Keep projects together, then add accounts with the access they need.</p><div class="onboarding-data-note">Topics, drafts, review history, and settings are not stored on the server yet. Do not enter sensitive customer content.</div></div></section></div>`;
 }
 
 function renderClients() {
@@ -511,25 +796,42 @@ function renderClients() {
   return `<div class="page-heading"><div><div class="eyebrow">MULTI-CLIENT OPERATIONS <span class="demo-chip">${state.user && state.user.demo ? "SAMPLE CLIENTS" : "WORKSPACE"}</span></div><h1>Client workspaces</h1><p class="page-subtitle">Keep client projects distinct and invite the right reviewers to each workspace.</p></div><div class="heading-actions"><button class="button" data-action="client-guide">How access works</button><button class="button primary" data-action="add-client">${icon("plus")} Add a client</button></div></div>
     ${visibleClients.length ? `<div class="client-summary-grid"><article class="metric-card"><div class="metric-top"><span>Client workspaces</span><i class="metric-icon">${icon("grid")}</i></div><div class="metric-value">${visibleClients.length}</div><div class="metric-foot">Organized by organization</div></article><article class="metric-card"><div class="metric-top"><span>Pages in client projects</span><i class="metric-icon">${icon("file")}</i></div><div class="metric-value">${visibleClients.reduce((sum, client) => sum + Number(client.pages || 0), 0)}</div><div class="metric-foot">Sample project totals</div></article><article class="metric-card"><div class="metric-top"><span>Client approvals</span><i class="metric-icon">${icon("check")}</i></div><div class="metric-value">Role based</div><div class="metric-foot">Viewer access can be limited</div></article></div>
     <div class="client-grid">${visibleClients.map((client, index) => `<article class="panel client-card"><div class="client-card-top"><span class="client-mark mark-${index % 4}">${escapeHtml(client.name.slice(0, 1))}</span><button class="row-action" data-action="client-menu" data-client="${escapeHtml(client.name)}">···</button></div><h2>${escapeHtml(client.name)}</h2><p>${escapeHtml(client.vertical)} · ${Number(client.pages || 0)} sample pages</p><div class="client-card-bottom">${chip(client.status)}<span>${state.user && state.user.demo ? "Demo workspace" : "New workspace"}</span></div><button class="button client-open" data-action="open-client" data-client="${escapeHtml(client.name)}">Open workspace ${icon("arrow")}</button></article>`).join("")}</div>` : `<div class="panel empty-client-state"><span class="empty-art">${icon("grid")}</span><h2>Your first client workspace starts here.</h2><p>Separate clients by workspace, keep reviewers scoped to their work, and manage delivery from one agency view.</p><button class="button primary" data-action="add-client">${icon("plus")} Add a client workspace</button></div>`}
-    <div class="roadmap-banner">${icon("check")} <span><strong>Client-level roles are a workflow preview.</strong> True client isolation, permissions, and audit history require server-side authorization before production launch.</span></div>`;
+    <div class="roadmap-banner">${icon("check")} <span><strong>Workspace membership is enforced by the backend.</strong> Agency-client linking and server-side content storage are not implemented yet.</span></div>`;
 }
 
 function renderTeam() {
-  const roleOptions = ["Owner", "Admin", "Editor", "Reviewer", "Client viewer"];
-  return `<div class="page-heading"><div><div class="eyebrow">PEOPLE &amp; PERMISSIONS</div><h1>Team &amp; access</h1><p class="page-subtitle">Invite collaborators and give each person the access their role requires.</p></div><div class="heading-actions"><span class="phase-chip">${state.members.length} members</span><button class="button primary" data-action="invite-member">${icon("plus")} Invite teammate</button></div></div>
+  const canManage = canManageWorkspace();
+  const activeWorkspace = currentWorkspace();
+  const roleOptions = state.user && !state.user.demo && activeWorkspace && activeWorkspace.role !== "Owner"
+    ? ["Editor", "Reviewer", "Client viewer"]
+    : ["Admin", "Editor", "Reviewer", "Client viewer"];
+  return `<div class="page-heading"><div><div class="eyebrow">PEOPLE &amp; PERMISSIONS</div><h1>Team &amp; access</h1><p class="page-subtitle">Manage the roles enforced for this workspace.</p></div><div class="heading-actions"><span class="phase-chip">${state.members.length} members</span>${canManage ? `<button class="button primary" data-action="invite-member">${icon("plus")} Add teammate</button>` : ""}</div></div>
     <div class="team-summary"><div class="panel team-callout"><span class="taxonomy-art">${icon("grid")}</span><div><h2>One team, clearer responsibilities.</h2><p>Owners control the workspace. Editors prepare drafts. Reviewers approve or request changes. Client viewers can access shared client work.</p></div><button class="text-button" data-action="role-guide">Role guide ${icon("arrow")}</button></div><div class="panel team-seat-card"><div class="eyebrow">WORKSPACE ACCESS</div><b>${state.members.length} <span>people</span></b><small>Team access is managed per workspace.</small></div></div>
-    <section class="panel team-table-panel"><div class="panel-heading"><div><h2>Workspace members</h2><p>Members and outstanding invitations.</p></div><select class="select-lite" id="teamRoleFilter" aria-label="Filter members"><option>All roles</option>${roleOptions.map((role) => `<option>${role}</option>`).join("")}</select></div><div class="table-wrap"><table class="topic-table"><thead><tr><th>MEMBER</th><th>ROLE</th><th>STATUS</th><th>ADDED</th><th></th></tr></thead><tbody>${state.members.map((member, index) => `<tr data-member-role="${escapeHtml(member.role)}"><td><div class="member-cell"><span class="member-avatar avatar-${index % 4}">${escapeHtml(initials(member.name || member.email))}</span><span><b>${escapeHtml(member.name || "Invitation pending")}</b><small>${escapeHtml(member.email)}</small></span></div></td><td><select class="member-role-select" data-member-email="${escapeHtml(member.email)}" aria-label="Role for ${escapeHtml(member.email)}">${roleOptions.map((role) => `<option ${member.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></td><td>${chip(member.status)}</td><td>${member.status === "Invited" ? "Invitation pending" : index === 0 ? "Workspace owner" : "Workspace member"}</td><td><button class="row-action" data-action="remove-member" data-email="${escapeHtml(member.email)}" aria-label="Remove ${escapeHtml(member.email)}">···</button></td></tr>`).join("")}</tbody></table></div></section>
-    <div class="access-note">${icon("clock")} <span><strong>Before inviting real customers:</strong> production access control needs server-side roles, invitation tokens, and verified identity.</span></div>`;
+    <section class="panel team-table-panel"><div class="panel-heading"><div><h2>Workspace members</h2><p>${state.user && state.user.demo ? "Sample members." : "Accounts and pending email invitations with server-enforced workspace access."}</p></div><select class="select-lite" id="teamRoleFilter" aria-label="Filter members"><option>All roles</option>${["Owner", "Admin", "Editor", "Reviewer", "Client viewer"].map((role) => `<option>${role}</option>`).join("")}</select></div><div class="table-wrap"><table class="topic-table"><thead><tr><th>MEMBER</th><th>ROLE</th><th>STATUS</th><th>ADDED</th><th></th></tr></thead><tbody>${state.members.map((member, index) => `<tr data-member-role="${escapeHtml(member.role)}"><td><div class="member-cell"><span class="member-avatar avatar-${index % 4}">${escapeHtml(initials(member.name || member.email))}</span><span><b>${escapeHtml(member.name || "Invitation pending")}</b><small>${escapeHtml(member.email)}</small></span></div></td><td><select class="member-role-select" data-member-id="${escapeHtml(member.id || "")}" data-member-email="${escapeHtml(member.email)}" aria-label="Role for ${escapeHtml(member.email)}" ${!canManage || member.role === "Owner" || member.status === "Pending" ? "disabled" : ""}>${member.role === "Owner" ? `<option selected>Owner</option>` : ""}${roleOptions.map((role) => `<option ${member.role === role ? "selected" : ""}>${role}</option>`).join("")}</select></td><td>${chip(member.status)}</td><td>${member.role === "Owner" ? "Workspace owner" : member.status === "Pending" ? "Invitation sent" : "Workspace member"}</td><td>${canManage && member.role !== "Owner" ? `<button class="row-action" data-action="${member.status === "Pending" ? "revoke-invitation" : "remove-member"}" data-member-id="${escapeHtml(member.id || "")}" data-invitation-id="${escapeHtml(member.invitationId || "")}" data-email="${escapeHtml(member.email)}" aria-label="${member.status === "Pending" ? "Revoke invitation for" : "Remove"} ${escapeHtml(member.email)}">···</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="5"><div class="empty-state">Loading workspace members…</div></td></tr>`}</tbody></table></div></section>
+    <div class="access-note">${icon("clock")} <span><strong>Invitations expire after seven days.</strong> Invitees must verify their email and sign in with the invited address before access is granted.</span></div>`;
 }
 
 function renderPlans() {
   const workspace = currentWorkspace();
-  const used = state.user && state.user.demo ? 12 : state.pages.length;
-  const limit = workspace && workspace.plan === "Growth" ? 100 : 20;
-  return `<div class="page-heading"><div><div class="eyebrow">SUBSCRIPTION OVERVIEW</div><h1>Plan &amp; usage</h1><p class="page-subtitle">Understand the workspace allowance and the next plan options.</p></div><span class="demo-chip">BILLING NOT CONNECTED</span></div>
-    <div class="plan-overview-grid"><section class="panel current-plan"><div class="panel-heading"><div><div class="eyebrow">CURRENT WORKSPACE PLAN</div><h2>${escapeHtml(workspace ? workspace.plan : "Starter")} <span class="plan-active">Active preview</span></h2></div><span class="phase-chip">${escapeHtml(workspace ? workspace.name : "")}</span></div><div class="plan-usage"><div class="usage-copy"><span>Pages used this month</span><strong>${used} <small>/ ${limit}</small></strong></div><div class="usage-track"><i style="width:${Math.min(100, used / limit * 100)}%"></i></div><small>${state.user && state.user.demo ? "Illustrative usage in the demo workspace" : "Counts reflect this browser prototype only"}</small></div><div class="plan-feature-list"><span>${icon("check")} Industrial topic library</span><span>${icon("check")} Review workflow</span><span>${icon("check")} HTML export</span><span>${icon("check")} ${workspace && workspace.plan === "Agency" ? "Multi-client workspace preview" : "1 domain"}</span></div><button class="button" data-action="billing-info">Manage billing ${icon("arrow")}</button></section>
-    <section class="panel billing-placeholder"><span class="taxonomy-art">${icon("chart")}</span><h2>Billing is the next connection.</h2><p>Payment collection, invoices, taxes, and subscription changes are not active in this prototype.</p><div class="onboarding-data-note">No card is charged and no payment details are collected here.</div><button class="button" data-action="billing-info">See what needs to launch</button></section></div>
-    <div class="section-title-row plans-heading"><h2>Plan options</h2><span class="page-subtitle">Indicative launch pricing from the project brief</span></div><div class="pricing-grid compact-pricing"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><div class="price">$79 <small>/ month</small></div><ul><li>${icon("check")} Up to 20 pages monthly</li><li>${icon("check")} 1 domain</li><li>${icon("check")} Review and export</li></ul><button class="button" data-action="billing-info">Choose Starter</button></article><article class="pricing-card featured"><span class="pricing-name">GROWTH</span><h3>For more production volume</h3><div class="price">$199 <small>/ month</small></div><ul><li>${icon("check")} Up to 100 pages monthly</li><li>${icon("check")} Up to 3 domains</li><li>${icon("check")} Team review workflow</li></ul><button class="button primary" data-action="billing-info">Choose Growth</button></article><article class="pricing-card"><span class="pricing-name">AGENCY</span><h3>For multi-client programs</h3><div class="price custom-price">Custom</div><ul><li>${icon("check")} Multi-client organization</li><li>${icon("check")} Role-based access preview</li><li>${icon("check")} White-label planned for V1</li></ul><button class="button" data-action="billing-info">Contact sales</button></article></div>`;
+  const canManage = Boolean(workspace && ["Owner", "Admin"].includes(workspace.role));
+  const findPlan = (name) => state.billingPlans.find((plan) => plan.name === name);
+  const formatPrice = (name) => {
+    const plan = findPlan(name);
+    if (!plan) return "Stripe price not configured";
+    const amount = new Intl.NumberFormat(undefined, { style: "currency", currency: plan.currency }).format(plan.unitAmount / 100);
+    const interval = plan.intervalCount === 1 ? plan.interval : `${plan.intervalCount} ${plan.interval}s`;
+    return `${amount} / ${interval}`;
+  };
+  const status = state.billingStatus ? state.billingStatus.status : "Loading";
+  const used = state.user && state.user.demo ? 12 : state.drafts.length;
+  const limit = state.user && state.user.demo ? 20 : 500;
+  const manageButton = canManage
+    ? `<button class="button" data-action="billing-info">Manage billing ${icon("arrow")}</button>`
+    : `<span class="onboarding-data-note">Only the workspace owner or admin can manage subscriptions.</span>`;
+  return `<div class="page-heading"><div><div class="eyebrow">SUBSCRIPTION OVERVIEW</div><h1>Plan &amp; usage</h1><p class="page-subtitle">Stripe manages recurring checkout, subscription events, and billing portal sessions.</p></div><span class="demo-chip">${state.user && state.user.demo ? "SAMPLE BILLING" : "STRIPE"}</span></div>
+    <div class="plan-overview-grid"><section class="panel current-plan"><div class="panel-heading"><div><div class="eyebrow">CURRENT WORKSPACE PLAN</div><h2>${escapeHtml(workspace ? workspace.plan : "Starter")} <span class="plan-active">${escapeHtml(status)}</span></h2></div><span class="phase-chip">${escapeHtml(workspace ? workspace.name : "")}</span></div><div class="plan-usage"><div class="usage-copy"><span>Stored drafts</span><strong>${used} <small>/ ${limit}</small></strong></div><div class="usage-track"><i style="width:${Math.min(100, used / limit * 100)}%"></i></div><small>The content storage limit is enforced by the API.</small></div><div class="plan-feature-list"><span>${icon("check")} Workspace topics and drafts</span><span>${icon("check")} Server-enforced review roles</span><span>${icon("check")} PostgreSQL persistence</span></div>${manageButton}</section>
+    <section class="panel billing-placeholder"><span class="taxonomy-art">${icon("chart")}</span><h2>Subscription controls</h2><p>Checkout and subscription changes are synchronized from verified Stripe webhooks. Customer card data is handled by Stripe.</p><div class="onboarding-data-note">AI generation is not connected. Configure Stripe price IDs before offering checkout.</div></section></div>
+    <div class="section-title-row plans-heading"><h2>Plan options</h2><span class="page-subtitle">Price and billing period are read from Stripe.</span></div><div class="pricing-grid compact-pricing"><article class="pricing-card"><span class="pricing-name">STARTER</span><h3>For a focused team</h3><div class="price">${escapeHtml(formatPrice("Starter"))}</div><ul><li>${icon("check")} Workspace topics and drafts</li><li>${icon("check")} Review workflow</li><li>${icon("check")} Member roles</li></ul><button class="button" data-action="subscribe-starter" ${!canManage || !findPlan("Starter") ? "disabled" : ""}>Choose Starter</button></article><article class="pricing-card featured"><span class="pricing-name">GROWTH</span><h3>For a growing team</h3><div class="price">${escapeHtml(formatPrice("Growth"))}</div><ul><li>${icon("check")} Workspace topics and drafts</li><li>${icon("check")} Team review workflow</li><li>${icon("check")} Billing portal access</li></ul><button class="button primary" data-action="subscribe-growth" ${!canManage || !findPlan("Growth") ? "disabled" : ""}>Choose Growth</button></article></div>`;
 }
 
 function treeEquipmentFor(vertical) {
@@ -546,6 +848,7 @@ function treeEquipmentFor(vertical) {
 }
 
 function renderReview() {
+  if (state.user && !state.user.demo) return renderPersistedReview();
   if (!state.user || !state.user.demo || state.activeWorkspaceId !== "northstar") return `<div class="page-heading"><div><div class="eyebrow">HUMAN APPROVAL</div><h1>Content review</h1><p class="page-subtitle">Drafts stay in review until a workspace member approves them.</p></div></div><div class="panel empty-client-state"><span class="empty-art">${icon("file")}</span><h2>Your review queue is ready.</h2><p>Start by creating a topic batch. Generated pages will appear here with their structure and QA status.</p><button class="button primary" data-view="topics">Explore topic library ${icon("arrow")}</button></div>`;
   const patched = state.qaPatched;
   const checklist = [
@@ -594,6 +897,30 @@ function renderReview() {
       </div>
       <div class="taxonomy-banner" style="margin-top:0"><div class="taxonomy-art">${icon("file")}</div><div class="taxonomy-copy"><h3>${state.approved ? "This draft is approved for export" : "Export is available after approval"}</h3><p>Approved drafts can be downloaded as clean HTML or copied into your CMS. Direct publishing is planned for V1.</p></div><button class="button" data-action="export" ${state.approved ? "" : "disabled"}>Export HTML ${icon("arrow")}</button></div>
     </div>`;
+}
+
+function renderPersistedReview() {
+  const draft = currentDraft();
+  if (!draft) return `<div class="page-heading"><div><div class="eyebrow">HUMAN APPROVAL</div><h1>Content review</h1><p class="page-subtitle">Drafts and review decisions are stored in your workspace.</p></div><div class="heading-actions"><button class="button primary" data-action="new-draft">${icon("plus")} New draft</button></div></div><div class="panel empty-client-state"><span class="empty-art">${icon("file")}</span><h2>No drafts yet.</h2><p>Create a manual draft, or select topics to create draft records.</p><button class="button" data-view="topics">Explore topics ${icon("arrow")}</button></div>`;
+  const role = currentWorkspace() && currentWorkspace().role;
+  const canEdit = ["Owner", "Admin", "Editor"].includes(role);
+  const canReview = ["Owner", "Admin", "Reviewer"].includes(role);
+  const editable = canEdit && ["Draft", "Changes requested"].includes(draft.status);
+  const reviewable = canReview && draft.status === "In review";
+  const history = state.feedback.filter((entry) => entry.draft_id === draft.id);
+  return `<div class="page-heading"><div><div class="eyebrow">WORKSPACE DRAFTS</div><h1>Review and edit</h1></div><div class="heading-actions"><select id="draftSelector" aria-label="Choose a draft">${state.drafts.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === draft.id ? "selected" : ""}>${escapeHtml(item.title)} · ${escapeHtml(item.status)}</option>`).join("")}</select><button class="button" data-action="new-draft">${icon("plus")} New draft</button></div></div><div class="review-wrap">
+    <div class="review-page-heading"><div class="review-title-group"><button class="back-button" data-view="topics" aria-label="Back to topics">${icon("arrow")}</button><div><div class="eyebrow">WORKSPACE DRAFT</div><h1>${escapeHtml(draft.title)}</h1><div class="review-meta">Version ${draft.version} <span>·</span> ${chip(draft.status)}</div></div></div>
+      <div class="review-actions">${editable ? `<button class="button" data-action="save-draft">Save draft</button><button class="button primary" data-action="submit-for-review">${icon("check")} Submit for review</button>` : ""}${reviewable ? `<button class="button" data-action="request-changes">Request changes</button><button class="button primary" data-action="approve">${icon("check")} Approve draft</button>` : ""}</div>
+    </div>
+    <div class="review-columns">
+      <section class="panel preview-card"><div class="preview-top"><span>${icon("external")} Draft preview</span><span>${escapeHtml(draft.status)}</span></div><article class="preview-document"><h2>${escapeHtml(draft.title)}</h2><p class="lead">${escapeHtml(draft.content || "No content has been added yet.")}</p></article></section>
+      <section class="panel editor-card"><div class="editor-top"><span>${icon("file")} Persistent draft</span></div><div class="editor-content">
+        <div class="editor-block"><div class="editor-section-label">Title</div><textarea class="editor-field title-field" data-draft-field="title" rows="2" ${editable ? "" : "disabled"}>${escapeHtml(draft.title)}</textarea></div>
+        <div class="editor-block"><div class="editor-section-label">Content</div><textarea class="editor-field" data-draft-field="content" rows="18" maxlength="100000" ${editable ? "" : "disabled"}>${escapeHtml(draft.content)}</textarea></div>
+      </div><div class="editor-bottom"><span>Autosave is off; save changes explicitly.</span>${editable ? `<button data-action="save-draft">Save draft</button>` : ""}</div></section>
+    </div>
+    ${history.length ? `<section class="panel" style="margin-top:16px;padding:20px"><h3>Review history</h3>${history.map((entry) => `<p><b>${entry.action === "approved" ? "Approved" : "Changes requested"}</b> · ${escapeHtml(entry.comment || "")}</p>`).join("")}</section>` : ""}
+  </div>`;
 }
 
 function renderEditorContent() {
@@ -686,7 +1013,66 @@ function openWorkspaceForm() {
 }
 
 function openInviteModal() {
-  openModal(`<div class="eyebrow">TEAM ACCESS</div><h2 id="modalTitle">Invite a teammate</h2><p class="modal-intro">Choose the role before sending an invitation. Invitations are simulated in this prototype.</p><div class="settings-field"><label for="inviteEmail">Work email</label><input id="inviteEmail" type="email" placeholder="teammate@company.com" /></div><div class="settings-field"><label for="inviteRole">Workspace role</label><select id="inviteRole"><option>Editor</option><option>Reviewer</option><option>Admin</option><option>Client viewer</option></select></div><div class="auth-consent"><span>${icon("check")}</span> Production invites need verified email and expiring invitation tokens.</div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="send-invite">Add teammate</button></div>`);
+  const canGrantAdmin = currentWorkspace().role === "Owner" || state.user.demo;
+  openModal(`<div class="eyebrow">TEAM ACCESS</div><h2 id="modalTitle">Invite a teammate</h2><p class="modal-intro">We’ll email a single-use link. Access is granted only after the invitee verifies their email and accepts while signed in as this address.</p><div class="settings-field"><label for="inviteEmail">Work email</label><input id="inviteEmail" type="email" placeholder="teammate@company.com" /></div><div class="settings-field"><label for="inviteRole">Workspace role</label><select id="inviteRole">${canGrantAdmin ? `<option value="admin">Admin</option>` : ""}<option value="editor">Editor</option><option value="reviewer">Reviewer</option><option value="client_viewer">Client viewer</option></select></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="send-invite">Send invitation</button></div>`);
+}
+
+async function initializeApp() {
+  const parameters = new URLSearchParams(window.location.search);
+  const fragment = new URLSearchParams(window.location.hash.slice(1));
+  const billingResult = parameters.get("billing");
+  if (["success", "cancel"].includes(billingResult)) window.history.replaceState({}, "", window.location.pathname);
+  const invitationToken = fragment.get("invite") || parameters.get("invite");
+  if (invitationToken && /^[A-Za-z0-9_-]{43}$/.test(invitationToken)) {
+    sessionStorage.setItem("rankforge-pending-invitation", invitationToken);
+    window.history.replaceState({}, "", window.location.pathname);
+  }
+  const verificationToken = fragment.get("verify") || parameters.get("verify");
+  if (verificationToken) {
+    try {
+      await loadCsrfToken();
+      showEmailVerification(verificationToken);
+    } catch {
+      showPublic();
+      showToast("Could not verify the email link. Start the server and try again.");
+    }
+    return;
+  }
+  const resetToken = fragment.get("reset") || parameters.get("reset");
+  if (resetToken && /^[A-Za-z0-9_-]{43}$/.test(resetToken)) {
+    try {
+      await loadCsrfToken();
+      showPasswordReset(resetToken);
+    } catch {
+      showPublic();
+      showToast("Could not start secure password recovery. Try again.");
+    }
+    return;
+  }
+  if (!sessionStorage.getItem("rankforge-pending-invitation") && restoreState()) {
+    showProduct();
+    return;
+  }
+  try {
+    await loadCsrfToken();
+    const account = await apiRequest("/me");
+    setAuthenticatedWorkspace(account.user, account.workspaces);
+    if (sessionStorage.getItem("rankforge-pending-invitation")) {
+      await acceptPendingInvitation(account);
+    } else {
+      await refreshWorkspaceContent().catch((loadError) => showToast(loadError.message));
+    }
+    showProduct();
+    if (billingResult === "success") showToast("Checkout completed. Stripe is confirming the subscription.");
+    if (billingResult === "cancel") showToast("Checkout was cancelled.");
+  } catch (error) {
+    if (error.status === 401 && sessionStorage.getItem("rankforge-pending-invitation")) {
+      showInvitationSignup(sessionStorage.getItem("rankforge-pending-invitation"));
+    } else {
+      showPublic();
+      if (error.status !== 401) showToast("Secure backend is unavailable. Start the server and try again.");
+    }
+  }
 }
 
 function bindPageEvents() {
@@ -700,19 +1086,42 @@ function bindPageEvents() {
   if (topicSearch) topicSearch.addEventListener("input", (event) => { state.search = event.target.value; const position = event.target.selectionStart; render(); const next = document.getElementById("topicSearch"); next.focus(); next.setSelectionRange(position, position); });
   const publishedSearch = document.getElementById("publishedSearch");
   if (publishedSearch) publishedSearch.addEventListener("input", (event) => { state.search = event.target.value; const position = event.target.selectionStart; render(); const next = document.getElementById("publishedSearch"); next.focus(); next.setSelectionRange(position, position); });
+  const draftSelector = document.getElementById("draftSelector");
+  if (draftSelector) draftSelector.addEventListener("change", () => {
+    state.activeDraftId = draftSelector.value;
+    refreshWorkspaceContent().then(() => render()).catch((error) => showToast(error.message));
+  });
   const selectAll = document.getElementById("selectAll");
   if (selectAll) selectAll.addEventListener("change", () => document.querySelectorAll(".topic-check").forEach((checkbox) => { checkbox.checked = selectAll.checked; }));
   const teamRoleFilter = document.getElementById("teamRoleFilter");
   if (teamRoleFilter) teamRoleFilter.addEventListener("change", () => {
     document.querySelectorAll("[data-member-role]").forEach((row) => { row.hidden = teamRoleFilter.value !== "All roles" && row.dataset.memberRole !== teamRoleFilter.value; });
   });
-  document.querySelectorAll(".member-role-select").forEach((select) => select.addEventListener("change", () => {
+  document.querySelectorAll(".member-role-select").forEach((select) => select.addEventListener("change", async () => {
     const member = state.members.find((item) => item.email === select.dataset.memberEmail);
-    if (member) { member.role = select.value; persistState(); showToast(`Role updated to ${select.value} in this local prototype.`); }
+    if (!member) return;
+    if (state.user.demo) {
+      member.role = select.value;
+      persistState();
+      showToast(`Sample role updated to ${select.value}.`);
+      return;
+    }
+    const roleValue = { Admin: "admin", Editor: "editor", Reviewer: "reviewer", "Client viewer": "client_viewer" }[select.value];
+    try {
+      await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/members/${encodeURIComponent(select.dataset.memberId)}`, {
+        method: "PATCH",
+        body: { role: roleValue }
+      });
+      member.role = select.value;
+      showToast(`Role updated to ${select.value}.`);
+    } catch (error) {
+      showToast(error.message);
+      render();
+    }
   }));
 }
 
-function handleAction(action, button) {
+async function handleAction(action, button) {
   if (action === "new-batch") return openBatchModal();
   if (action === "close-modal") return closeModal();
   if (action === "workspace-switcher") return openWorkspaceModal();
@@ -722,17 +1131,24 @@ function handleAction(action, button) {
     const name = document.getElementById("workspaceName").value.trim();
     const industry = document.getElementById("workspaceIndustry").value;
     if (!name) return showToast("Enter a name for this workspace.");
-    const workspace = { id: `workspace-${Date.now()}`, name, industry, plan: "Starter", role: "Owner", website: "" };
+    let workspace;
+    if (state.user && !state.user.demo) {
+      apiRequest("/workspaces", { method: "POST", body: { name, industry } }).then((result) => {
+        workspace = { ...result, website: "" };
+        state.workspaces.push(workspace);
+        activateWorkspace(workspace);
+        state.selectedVertical = state.verticals.some((vertical) => vertical.name === industry) ? industry : "Food & Beverage";
+        closeModal();
+        setView("dashboard");
+        showToast("Workspace created.");
+      }).catch((error) => showToast(error.message));
+      return;
+    }
+    workspace = { id: `workspace-${Date.now()}`, name, industry, plan: "Starter", role: "Owner", website: "" };
     saveCurrentWorkspaceData();
     state.workspaces.push(workspace);
-    state.activeWorkspaceId = workspace.id;
+    activateWorkspace(workspace);
     state.selectedVertical = state.verticals.some((vertical) => vertical.name === industry) ? industry : "Food & Beverage";
-    state.topics = [];
-    state.batches = [];
-    state.pages = [];
-    state.members = [{ name: state.user.name, email: state.user.email, role: "Owner", status: "Active" }];
-    state.clients = [];
-    state.workspaceData[workspace.id] = { topics: state.topics, batches: state.batches, pages: state.pages, members: state.members, clients: state.clients };
     persistState();
     closeModal();
     updateWorkspaceChrome();
@@ -741,10 +1157,15 @@ function handleAction(action, button) {
     return;
   }
   if (action === "switch-workspace") {
-    saveCurrentWorkspaceData();
-    state.activeWorkspaceId = button.dataset.workspace;
-    loadWorkspaceData(state.activeWorkspaceId);
-    const workspace = currentWorkspace();
+    const workspace = state.workspaces.find((item) => item.id === button.dataset.workspace);
+    if (!workspace) return showToast("That workspace is no longer available.");
+    if (state.user && state.user.demo) {
+      saveCurrentWorkspaceData();
+      activateWorkspace(workspace);
+    } else {
+      activateWorkspace(workspace);
+      refreshWorkspaceContent(workspace.id).then(() => render()).catch((error) => showToast(error.message));
+    }
     if (workspace && state.verticals.some((vertical) => vertical.name === workspace.industry)) state.selectedVertical = workspace.industry;
     state.view = "dashboard";
     persistState();
@@ -759,7 +1180,19 @@ function handleAction(action, button) {
     const role = document.getElementById("inviteRole").value;
     if (!email.includes("@")) return showToast("Enter a valid email address.");
     if (state.members.some((member) => member.email.toLowerCase() === email)) return showToast("This email already has workspace access.");
-    state.members.push({ name: email.split("@")[0].replace(/[._-]/g, " "), email, role, status: "Invited" });
+    if (!state.user.demo) {
+      apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/invitations`, {
+        method: "POST",
+        body: { email, role }
+      }).then(() => {
+        closeModal();
+        refreshWorkspaceMembers();
+        showToast("Invitation email sent.");
+      }).catch((error) => showToast(error.message));
+      return;
+    }
+    const roleLabel = { admin: "Admin", editor: "Editor", reviewer: "Reviewer", client_viewer: "Client viewer" }[role];
+    state.members.push({ name: email.split("@")[0].replace(/[._-]/g, " "), email, role: roleLabel, status: "Invited" });
     persistState();
     closeModal();
     render();
@@ -770,6 +1203,24 @@ function handleAction(action, button) {
     const member = state.members.find((item) => item.email === button.dataset.email);
     if (!member) return;
     if (member.role === "Owner") return showToast("The workspace owner cannot be removed.");
+    if (!state.user.demo) {
+      apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/members/${encodeURIComponent(button.dataset.memberId)}`, { method: "DELETE" })
+        .then(() => {
+          refreshWorkspaceMembers();
+          showToast("Member removed from this workspace.");
+        })
+        .catch((error) => showToast(error.message));
+      return;
+    }
+    if (action === "revoke-invitation") {
+      const member = state.members.find((item) => item.invitationId === button.dataset.invitationId);
+      if (!member) return;
+      apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/invitations/${encodeURIComponent(member.invitationId)}`, { method: "DELETE" })
+        .then(() => refreshWorkspaceMembers())
+        .then(() => showToast("Invitation revoked."))
+        .catch((error) => showToast(error.message));
+      return;
+    }
     state.members = state.members.filter((item) => item.email !== member.email);
     persistState();
     render();
@@ -777,28 +1228,33 @@ function handleAction(action, button) {
     return;
   }
   if (action === "role-guide") {
-    return openModal(`<div class="eyebrow">ACCESS MODEL</div><h2 id="modalTitle">Choose the right workspace role</h2><div class="role-guide-list"><p><b>Owner / Admin</b><span>Configure workspace details, members, and projects.</span></p><p><b>Editor</b><span>Prepare topics and drafts for review.</span></p><p><b>Reviewer</b><span>Review drafts and approve or request changes.</span></p><p><b>Client viewer</b><span>View shared client work without accessing other agency projects.</span></p></div><div class="onboarding-data-note">These are UI roles only. Enforce all permissions in a trusted server before production.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Got it</button></div>`);
+    return openModal(`<div class="eyebrow">ACCESS MODEL</div><h2 id="modalTitle">Choose the right workspace role</h2><div class="role-guide-list"><p><b>Owner / Admin</b><span>Manage membership and workspace access.</span></p><p><b>Editor</b><span>Prepare topics and drafts for review.</span></p><p><b>Reviewer</b><span>Review drafts and approve or request changes.</span></p><p><b>Client viewer</b><span>View work in workspaces where they are a member.</span></p></div><div class="onboarding-data-note">The server enforces workspace membership and member-management roles. Content workflows and their permissions are still prototype-only.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Got it</button></div>`);
   }
   if (action === "add-client") {
-    return openModal(`<div class="eyebrow">CLIENT ONBOARDING</div><h2 id="modalTitle">Add a client workspace</h2><p class="modal-intro">Keep client content, approved links, and review access organized in a separate workspace.</p><div class="settings-field"><label for="clientName">Client / organization name</label><input id="clientName" placeholder="e.g. Apex Steel Systems" /></div><div class="settings-field"><label for="clientIndustry">Industry</label><select id="clientIndustry">${state.verticals.map((vertical) => `<option>${escapeHtml(vertical.name)}</option>`).join("")}</select></div><div class="settings-field"><label for="clientContact">Client reviewer email (optional)</label><input id="clientContact" type="email" placeholder="reviewer@client.com" /></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-client">Create workspace</button></div>`);
+    return openModal(`<div class="eyebrow">CLIENT ONBOARDING</div><h2 id="modalTitle">Add a client workspace</h2><p class="modal-intro">Create a separately permissioned workspace. Add existing accounts from Team &amp; access after creation.</p><div class="settings-field"><label for="clientName">Client / organization name</label><input id="clientName" placeholder="e.g. Apex Steel Systems" /></div><div class="settings-field"><label for="clientIndustry">Industry</label><select id="clientIndustry">${state.verticals.map((vertical) => `<option>${escapeHtml(vertical.name)}</option>`).join("")}</select></div><div class="modal-footer"><button class="button" data-action="close-modal">Cancel</button><button class="button primary" data-action="save-client">Create workspace</button></div>`);
   }
   if (action === "save-client") {
     const name = document.getElementById("clientName").value.trim();
     const vertical = document.getElementById("clientIndustry").value;
-    const contact = document.getElementById("clientContact").value.trim();
     if (!name) return showToast("Enter a client or organization name.");
-    if (contact && !contact.includes("@")) return showToast("Enter a valid client reviewer email or leave it blank.");
+    if (!state.user.demo) {
+      apiRequest("/workspaces", { method: "POST", body: { name, industry: vertical, kind: "client" } }).then((workspace) => {
+        state.workspaces.push({ ...workspace, website: "", teamType: "Client" });
+        state.clients.push({ id: workspace.id, name, vertical, pages: 0, status: "Onboarding" });
+        closeModal();
+        render();
+        showToast("Workspace created. Add existing accounts from Team & access to grant access.");
+      }).catch((error) => showToast(error.message));
+      return;
+    }
     const id = `client-${Date.now()}`;
-    state.clients.push({ id, name, vertical, pages: 0, status: "Onboarding", contact });
+    state.clients.push({ id, name, vertical, pages: 0, status: "Onboarding" });
     state.workspaces.push({ id, name, industry: vertical, plan: "Agency", role: "Admin", website: "", teamType: "Client" });
     state.workspaceData[id] = {
       topics: [],
       batches: [],
       pages: [],
-      members: [
-        { name: state.user.name, email: state.user.email, role: "Admin", status: "Active" },
-        ...(contact ? [{ name: contact.split("@")[0].replace(/[._-]/g, " "), email: contact, role: "Client viewer", status: "Invited" }] : [])
-      ],
+      members: [{ name: state.user.name, email: state.user.email, role: "Admin", status: "Active" }],
       clients: []
     };
     persistState();
@@ -808,28 +1264,66 @@ function handleAction(action, button) {
     return;
   }
   if (action === "client-guide") {
-    return openModal(`<div class="eyebrow">WORKSPACE BOUNDARIES</div><h2 id="modalTitle">How client access should work</h2><p class="modal-intro">Each client should have its own server-enforced organization boundary, members, content, and audit history. Client viewers should only receive access to the projects shared with them.</p><div class="role-guide-list"><p><b>Agency team</b><span>Manage client workspaces with scoped internal roles.</span></p><p><b>Client reviewer</b><span>Only review content explicitly shared to their client workspace.</span></p><p><b>Isolation</b><span>Enforced by backend authorization on every request — not a front-end filter.</span></p></div><div class="onboarding-data-note">This frontend prototype illustrates the workflows but does not implement secure tenant isolation.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
+    return openModal(`<div class="eyebrow">WORKSPACE BOUNDARIES</div><h2 id="modalTitle">How client access works</h2><p class="modal-intro">Each workspace has a distinct server-enforced membership boundary. A user can access only workspaces to which they have been added.</p><div class="role-guide-list"><p><b>Workspace owner</b><span>Creates the workspace and manages members.</span></p><p><b>Client reviewer</b><span>Must have an account and be explicitly added to the relevant workspace.</span></p><p><b>Isolation</b><span>API requests check workspace membership and role on the server.</span></p></div><div class="onboarding-data-note">Agency-to-client linking and server-side content storage are not included yet.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
   }
   if (action === "open-client") {
     const client = state.clients.find((item) => item.name === button.dataset.client);
     if (!client) return showToast("That client workspace is no longer available.");
-    saveCurrentWorkspaceData();
-    state.activeWorkspaceId = client.id;
-    loadWorkspaceData(client.id);
+    if (state.user.demo) {
+      saveCurrentWorkspaceData();
+      activateWorkspace(state.workspaces.find((workspace) => workspace.id === client.id));
+    } else {
+      const workspace = state.workspaces.find((item) => item.id === client.id);
+      if (!workspace) return showToast("You do not have access to that workspace.");
+      activateWorkspace(workspace);
+      refreshWorkspaceContent(workspace.id).then(() => render()).catch((error) => showToast(error.message));
+    }
     if (state.verticals.some((vertical) => vertical.name === client.vertical)) state.selectedVertical = client.vertical;
     updateWorkspaceChrome();
     persistState();
     setView("topics");
-    showToast(`Opened ${client.name}. Production access still requires server-side authorization.`);
+    showToast(`Opened ${client.name}. Workspace access is checked by the server.`);
     return;
   }
   if (action === "client-menu") return showToast(`Client workspace: ${button.dataset.client}. Use the card to open this client.`);
   if (action === "billing-info") {
-    return openModal(`<div class="eyebrow">COMMERCE INTEGRATION</div><h2 id="modalTitle">Billing is not active yet.</h2><p class="modal-intro">Connect a payment provider, subscription lifecycle, receipts, failed-payment handling, taxes, and cancellation flows before accepting customers.</p><div class="onboarding-data-note">The prices shown are indicative launch pricing from the project brief. This prototype does not collect payment details or create subscriptions.</div><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
+    if (state.user && !state.user.demo) {
+      try {
+        const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/billing/portal`, { method: "POST", body: {} });
+        window.location.assign(result.url);
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
+    return openModal(`<div class="eyebrow">COMMERCE INTEGRATION</div><h2 id="modalTitle">Sample billing only</h2><p class="modal-intro">Real subscriptions use Stripe checkout and a verified webhook. The sample workspace cannot create or change a subscription.</p><div class="modal-footer"><button class="button primary" data-action="close-modal">Close</button></div>`);
+  }
+  if (action === "subscribe-starter" || action === "subscribe-growth") {
+    if (!state.user || state.user.demo) return showToast("Stripe checkout is unavailable in the sample workspace.");
+    const plan = action === "subscribe-starter" ? "Starter" : "Growth";
+    try {
+      const result = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/billing/checkout`, {
+        method: "POST",
+        body: { plan }
+      });
+      window.location.assign(result.url);
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
   }
   if (action === "sign-out") {
+    if (!state.user.demo) {
+      apiRequest("/auth/logout", { method: "POST" }).then(() => {
+        state.user = null;
+        csrfToken = null;
+        showPublic();
+      }).catch((error) => showToast(error.message));
+      return;
+    }
     state.user = null;
-    localStorage.setItem(storageKey, JSON.stringify({ ...state, user: null }));
+    csrfToken = null;
+    localStorage.removeItem(storageKey);
     showPublic();
     return;
   }
@@ -861,6 +1355,22 @@ function handleAction(action, button) {
     return;
   }
   if (action === "approve") {
+    if (state.user && !state.user.demo) {
+      const draft = currentDraft();
+      if (!draft) return showToast("Choose a draft to review.");
+      try {
+        await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}/review`, {
+          method: "POST",
+          body: { action: "approved", comment: "" }
+        });
+        await refreshWorkspaceContent();
+        render();
+        showToast("Draft approved and recorded.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     if (!state.qaPatched) return showToast("Resolve the missing CTA before approving this sample draft.");
     state.approved = true;
     state.pages.unshift({ title: "Predictive maintenance for centrifugal pumps", batch: "Food & Beverage · PdM", date: "May 21, 2025", status: "Approved", schema: "Article · FAQPage" });
@@ -876,6 +1386,23 @@ function handleAction(action, button) {
   if (action === "submit-feedback") {
     const comment = document.getElementById("reviewComment").value.trim();
     if (!comment) return showToast("Add a comment so the requested change is clear.");
+    if (state.user && !state.user.demo) {
+      const draft = currentDraft();
+      if (!draft) return showToast("Choose a draft to review.");
+      try {
+        await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}/review`, {
+          method: "POST",
+          body: { action: "changes_requested", comment }
+        });
+        closeModal();
+        await refreshWorkspaceContent();
+        render();
+        showToast("Feedback saved. The draft is ready for changes.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     closeModal();
     showToast("Feedback saved to the sample review thread.");
     return;
@@ -896,7 +1423,73 @@ function handleAction(action, button) {
   if (action === "generate-selected") {
     const selected = [...document.querySelectorAll(".topic-check:checked")];
     if (!selected.length) return showToast("Select one or more topics to start a batch.");
+    if (!state.user.demo) {
+      const topics = selected.map((checkbox) => state.topics[Number(checkbox.dataset.index)]).filter(Boolean);
+      try {
+        const drafts = [];
+        for (const topic of topics) {
+          drafts.push(await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts`, {
+            method: "POST",
+            body: { topicId: topic.id, title: topic.title, content: "" }
+          }));
+        }
+        state.drafts.unshift(...drafts);
+        state.activeDraftId = drafts[0] ? drafts[0].id : null;
+        setView("review");
+        showToast("Draft records created. Add content manually; AI generation is not connected.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     showToast(`${selected.length} sample topic${selected.length === 1 ? "" : "s"} added to a generation queue.`);
+    return;
+  }
+  if (action === "new-draft") {
+    if (!state.user || state.user.demo) return showToast("Create a sample batch to start a demo draft.");
+    try {
+      const draft = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts`, {
+        method: "POST",
+        body: { title: "Untitled draft", content: "" }
+      });
+      state.drafts.unshift(draft);
+      state.activeDraftId = draft.id;
+      render();
+      showToast("Draft created.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "save-draft") {
+    const draft = currentDraft();
+    const titleField = document.querySelector('[data-draft-field="title"]');
+    const contentField = document.querySelector('[data-draft-field="content"]');
+    if (!draft || !titleField || !contentField) return;
+    try {
+      const updated = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}`, {
+        method: "PATCH",
+        body: { topicId: draft.topicId, title: titleField.value, content: contentField.value }
+      });
+      Object.assign(draft, updated);
+      render();
+      showToast("Draft saved.");
+    } catch (error) {
+      showToast(error.message);
+    }
+    return;
+  }
+  if (action === "submit-for-review") {
+    const draft = currentDraft();
+    if (!draft) return;
+    try {
+      await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/drafts/${encodeURIComponent(draft.id)}/submit`, { method: "POST", body: {} });
+      await refreshWorkspaceContent();
+      render();
+      showToast("Draft submitted for review.");
+    } catch (error) {
+      showToast(error.message);
+    }
     return;
   }
   if (action === "add-topic") {
@@ -907,6 +1500,21 @@ function handleAction(action, button) {
     const title = document.getElementById("topicName").value.trim();
     const vertical = document.getElementById("topicVertical").value;
     if (!title) return showToast("Enter a topic idea first.");
+    if (state.user && !state.user.demo) {
+      try {
+        const topic = await apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}/topics`, {
+          method: "POST",
+          body: { title, vertical, equipment: "To classify", pain: "To define", type: "Solution page" }
+        });
+        state.topics.unshift(topic);
+        closeModal();
+        render();
+        showToast("Topic saved to your workspace.");
+      } catch (error) {
+        showToast(error.message);
+      }
+      return;
+    }
     state.topics.unshift({ title, vertical, equipment: "To classify", pain: "To define", type: "Solution page", status: "Suggested" });
     persistState();
     closeModal();
@@ -918,14 +1526,32 @@ function handleAction(action, button) {
     const workspace = currentWorkspace();
     const cards = document.querySelectorAll(".settings-card");
     const companyInputs = cards[0] ? cards[0].querySelectorAll("input") : [];
+    let updatedName = "";
+    let updatedWebsite = "";
     if (companyInputs.length && workspace) {
-      const name = companyInputs[0].value.trim();
-      if (!name) return showToast("Workspace name cannot be empty.");
-      workspace.name = name;
-      workspace.website = companyInputs[1].value.trim();
+      updatedName = companyInputs[0].value.trim();
+      updatedWebsite = companyInputs[1].value.trim();
+      if (!updatedName) return showToast("Workspace name cannot be empty.");
     }
     const ctaInput = cards[1] ? cards[1].querySelector("input") : null;
-    if (ctaInput && workspace) workspace.approvedCta = ctaInput.value.trim();
+    if (state.user && !state.user.demo) {
+      apiRequest(`/workspaces/${encodeURIComponent(state.activeWorkspaceId)}`, {
+        method: "PATCH",
+        body: { name: updatedName, website: updatedWebsite }
+      }).then((result) => {
+        Object.assign(workspace, result);
+        if (ctaInput) workspace.approvedCta = ctaInput.value.trim();
+        updateWorkspaceChrome();
+        render();
+        showToast("Workspace details updated. Content settings remain prototype-only.");
+      }).catch((error) => showToast(error.message));
+      return;
+    }
+    if (workspace) {
+      workspace.name = updatedName || workspace.name;
+      workspace.website = updatedWebsite;
+      if (ctaInput) workspace.approvedCta = ctaInput.value.trim();
+    }
     persistState();
     updateWorkspaceChrome();
     render();
@@ -975,5 +1601,4 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeModal();
 });
 
-if (restoreState()) showProduct();
-else showPublic();
+initializeApp();

@@ -171,6 +171,7 @@ h3 { font-size: 0.75rem; margin-bottom: 4px; }
 .filter-tab { border: 0; background: transparent; color: #828e85; cursor: pointer; padding: 6px 9px; border-radius: 5px; font-size: 0.5625rem; }
 .filter-tab.active { background: #edf5ef; color: var(--green-dark); font-weight: 700; }
 .topic-layout { display: grid; grid-template-columns: minmax(0, 1fr) 275px; gap: 14px; align-items: start; }
+.topics-batch-section { margin: 14px 0; }
 .topic-main { min-width: 0; }
 .topic-toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .topic-toolbar .search-box { width: 250px; height: 33px; }

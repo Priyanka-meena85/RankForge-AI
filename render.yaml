@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: rankforge-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health/live
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production

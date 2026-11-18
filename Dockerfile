@@ -12,6 +12,7 @@ COPY --chown=node:node server.js app.js index.html styles.css ./
 COPY --chown=node:node assets ./assets
 COPY --chown=node:node db ./db
 COPY --chown=node:node scripts ./scripts
+COPY --chown=node:node services ./services
 
 USER node
 

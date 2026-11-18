@@ -13,6 +13,8 @@ const legacyStorageKey = "forgeflow-demo";
 let csrfToken = null;
 
 function getApiBaseUrl() {
+  const saved = localStorage.getItem("rankforge_api_base") || (typeof window !== "undefined" && window.RANKFORGE_API_URL);
+  if (saved && typeof saved === "string") return saved.replace(/\/$/, "");
   const host = window.location.hostname || "localhost";
   const port = window.location.port;
   // If running via Live Server (5500, 5501, 5502) or other static server or file://, target the local Express backend on port 4000
@@ -21,7 +23,7 @@ function getApiBaseUrl() {
   }
   return "/api";
 }
-const apiBase = getApiBaseUrl();
+let apiBase = getApiBaseUrl();
 
 async function safeParseJson(response) {
   const contentType = (response.headers.get("content-type") || "").toLowerCase();
@@ -39,16 +41,20 @@ async function safeParseJson(response) {
     }
   }
   const isStaticDev = window.location.port === "5500" || window.location.port === "5501" || window.location.port === "5502";
+  const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
   if (text.startsWith("<!DOCTYPE") || text.includes("<html") || response.status === 404) {
     if (isStaticDev) {
       throw new Error("Connected to static preview instead of the backend. Please run 'npm start' in your terminal and open http://localhost:4000.");
     }
-    throw new Error("Backend API endpoint not found (HTTP 404). Ensure the server is running on http://localhost:4000.");
+    if (isLocalHost) {
+      throw new Error("Backend API endpoint not found (HTTP 404). Ensure the server is running on http://localhost:4000.");
+    }
+    throw new Error("Backend API is not reachable on this host (HTTP 404). You can explore in Demo Mode or configure a backend URL.");
   }
   if (response.status >= 500) {
     throw new Error(`Server error (${response.status}). Please check backend console logs.`);
   }
-  throw new Error(`Unexpected server response (HTTP ${response.status || "offline"}). Please verify backend is running on http://localhost:4000.`);
+  throw new Error(`Unexpected server response (HTTP ${response.status || "offline"}). Please verify backend is running.`);
 }
 
 async function fetchSafe(url, options) {
@@ -651,7 +657,14 @@ async function handleAuth(action, invitationToken) {
       showToast("You are signed in.");
     }
   } catch (requestError) {
-    error.textContent = requestError.message;
+    const isOffline = requestError.message.includes("404") || requestError.message.includes("not reachable") || requestError.message.includes("Cannot connect");
+    if (isOffline) {
+      error.innerHTML = `<div>${escapeHtml(requestError.message)}</div><div style="margin-top:10px;"><button type="button" class="button secondary" style="width:100%;font-size:0.85rem;" id="errorDemoBtn">Explore sample workspace in Demo Mode →</button></div>`;
+      const demoBtn = document.getElementById("errorDemoBtn");
+      if (demoBtn) demoBtn.onclick = () => startDemo();
+    } else {
+      error.textContent = requestError.message;
+    }
     error.hidden = false;
   }
 }
@@ -1364,11 +1377,14 @@ async function initializeApp() {
     if (googleResult === "connected") showToast("Google Search Console and Analytics are connected.");
     if (googleResult === "error") showToast("Google could not be connected. Check your OAuth configuration and try again.");
   } catch (error) {
+    state.apiAvailable = false;
     if (error.status === 401 && sessionStorage.getItem("rankforge-pending-invitation")) {
       showInvitationSignup(sessionStorage.getItem("rankforge-pending-invitation"));
     } else {
       showPublic();
-      if (error.status !== 401) showToast(error.message || "Secure backend is unavailable. Start the server and try again.");
+      if (error.status !== 401 && sessionStorage.getItem("rankforge-pending-invitation")) {
+        showToast(error.message || "Secure backend is unavailable. Start the server and try again.");
+      }
     }
   }
 }

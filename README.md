@@ -28,7 +28,18 @@ In development, the server applies the idempotent schema at startup. Open `APP_O
 
 See [WORKFLOW.md](./WORKFLOW.md) for user flows, download the [workflow PDF](./WORKFLOW.pdf), and see [`.env.example`](./.env.example) for configuration names.
 
-## Render deployment
+## Vercel deployment (Serverless)
+
+RankForge AI includes built-in Vercel serverless support (`vercel.json` and `api/index.js`):
+
+1. Push your changes to GitHub and import the repository into [Vercel](https://vercel.com).
+2. Set Environment Variables in Project Settings (optional for preview, required for production):
+   - `SESSION_SECRET`: Random 32+ byte hex string.
+   - `DATABASE_URL`: Your PostgreSQL connection string (e.g. Neon, Supabase, or Render PostgreSQL). If omitted, the preview runs with the in-memory database.
+   - `APP_ORIGIN`: Your Vercel deployment URL (e.g. `https://your-project.vercel.app`).
+3. Deploy! Vercel serves the static frontend and routes `/api/*` to the serverless Express backend.
+
+## Render deployment (Web Service & Docker)
 
 The [Dockerfile](./Dockerfile) provides a non-root Node 24 production image. In Render, create a paid web service using this repository's Dockerfile and a PostgreSQL database in the same region. Configure the service:
 

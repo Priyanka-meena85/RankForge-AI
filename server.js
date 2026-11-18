@@ -2679,16 +2679,17 @@ async function start() {
     process.env.AWS_EXECUTION_ENV ||
     process.env.RAILWAY_ENVIRONMENT
   );
-  // Only enforce strict production if explicitly deployed or configured with a database
-  const production = process.env.NODE_ENV === "production" && (isCloudDeploy || Boolean(process.env.DATABASE_URL));
+  const hasDb = Boolean(process.env.DATABASE_URL);
+  const strictProduction = process.env.REQUIRE_PRODUCTION_CONFIG === "true";
+  const production = process.env.NODE_ENV === "production" && (hasDb || strictProduction);
   if (process.env.NODE_ENV === "production" && !production) {
     console.warn("\n=============================================================");
     console.warn("  [RankForge AI] NODE_ENV is set to production, but no DATABASE_URL is configured.");
-    console.warn("  Starting in local development mode with in-memory database.");
+    console.warn("  Starting with in-memory database for local/preview testing.");
     console.warn("=============================================================\n");
   }
   if (!process.env.SESSION_SECRET || Buffer.byteLength(process.env.SESSION_SECRET) < 32) {
-    if (production) throw new Error("SESSION_SECRET must contain at least 32 bytes.");
+    if (strictProduction) throw new Error("SESSION_SECRET must contain at least 32 bytes.");
     process.env.SESSION_SECRET = crypto.randomBytes(32).toString("hex");
   }
   const trustProxy = resolveTrustProxy(process.env);
@@ -2701,8 +2702,9 @@ async function start() {
   }
   const appOrigin = process.env.APP_ORIGIN
     || (process.env.RENDER === "true" && process.env.RENDER_EXTERNAL_URL)
+    || (process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}`)
     || `http://localhost:${port}`;
-  if (production && (!(process.env.APP_ORIGIN || (process.env.RENDER === "true" && process.env.RENDER_EXTERNAL_URL))
+  if (strictProduction && (!(process.env.APP_ORIGIN || (process.env.RENDER === "true" && process.env.RENDER_EXTERNAL_URL))
     || !process.env.SMTP_URL || !process.env.EMAIL_FROM
     || !process.env.STRIPE_SECRET_KEY || !process.env.STRIPE_WEBHOOK_SECRET
     || !process.env.STRIPE_STARTER_PRICE_ID || !process.env.STRIPE_GROWTH_PRICE_ID)) {
@@ -2714,11 +2716,11 @@ async function start() {
 
   let pool;
   if (!process.env.DATABASE_URL) {
-    if (production) throw new Error("DATABASE_URL is required.");
+    if (strictProduction) throw new Error("DATABASE_URL is required.");
     console.warn("\n=============================================================");
     console.warn("  [RankForge AI] DATABASE_URL is not configured.");
     console.warn("  Starting with in-memory development database for local preview.");
-    console.warn("  Configure DATABASE_URL in .env to use persistent PostgreSQL.");
+    console.warn("  Configure DATABASE_URL in environment to use persistent PostgreSQL.");
     console.warn("=============================================================\n");
     pool = createDevMockPool();
   } else {

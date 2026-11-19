@@ -2,6 +2,7 @@ const { createApp } = require("../server");
 const { createDevMockPool } = require("../db/mock-pool");
 const { Pool } = require("pg");
 const { createPostgresPoolConfig, assertProductionDatabaseTls } = require("../db/postgres");
+const { createGeminiClient } = require("../services/gemini");
 
 let cachedApp = null;
 
@@ -25,12 +26,16 @@ function getApp() {
   const appOrigin = process.env.APP_ORIGIN
     || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `http://localhost:${port}`);
 
+  const apiKey = process.env.GCP_API_KEY || process.env.GEMINI_API_KEY;
+  const geminiClient = createGeminiClient({ apiKey });
+
   cachedApp = createApp({
     pool,
     sessionSecret: process.env.SESSION_SECRET || "vercel-session-secret-at-least-32-bytes-long-padding",
     production: process.env.NODE_ENV === "production" && Boolean(process.env.DATABASE_URL),
     trustProxy: true,
-    appOrigin
+    appOrigin,
+    geminiClient
   });
 
   return cachedApp;

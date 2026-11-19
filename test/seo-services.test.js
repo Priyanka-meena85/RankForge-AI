@@ -10,6 +10,7 @@ const {
 } = require("../services/seo");
 const { createGoogleOAuthState, createGoogleAuthorizationUrl } = require("../services/google");
 const { createSecretCipher, normalizeWordPressSiteUrl } = require("../services/integrations");
+const { createGeminiClient, generateContextualIndustrialResponse } = require("../services/gemini");
 
 const goodArticle = {
   title: "Industrial pump monitoring",
@@ -159,4 +160,33 @@ test("autoPatchDraft automatically resolves missing rules, CTA, FAQs, and word c
   assert.ok(patched.body.includes("## Frequently asked questions"));
   assert.ok(patched.seoData.faqs.length >= 5);
   assert.ok(patched.seoData.metaDescription.length >= 100 && patched.seoData.metaDescription.length <= 160);
+});
+
+test("Google Gemini client handles chat completion and offline fallback gracefully", async () => {
+  const mockFetch = async (url, options) => {
+    return {
+      ok: true,
+      json: async () => ({
+        candidates: [
+          { content: { parts: [{ text: "Gemini: Recommended topics for Precision Machining include CNC vs EDM." }] } }
+        ]
+      })
+    };
+  };
+
+  const client = createGeminiClient({
+    apiKey: "mock-gemini-key-for-unit-testing",
+    fetchImpl: mockFetch
+  });
+
+  const reply = await client.chat({ prompt: "Suggest topic ideas" });
+  assert.ok(reply.includes("CNC vs EDM"));
+
+  // Test fallback response generator
+  const fallback = generateContextualIndustrialResponse("Suggest topics", { vertical: "Aerospace & Defense" });
+  assert.ok(fallback.includes("Industrial Topic Strategy"));
+  assert.ok(fallback.includes("Aerospace & Defense"));
+
+  const schemaFallback = generateContextualIndustrialResponse("Generate FAQ schema", { vertical: "Robotics" });
+  assert.ok(schemaFallback.includes("TechArticle") || schemaFallback.includes("schema.org"));
 });

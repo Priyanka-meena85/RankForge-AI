@@ -89,6 +89,11 @@
           <div class="breadcrumbs"><span>Northstar workspace</span><svg><use href="#i-chevron"/></svg><strong id="breadcrumbCurrent">Overview</strong></div>
           <div class="topbar-actions">
             <label class="search-box"><svg><use href="#i-search"/></svg><input id="globalSearch" type="search" placeholder="Search pages, topics..." /><kbd>⌘ K</kbd></label>
+            <button class="topbar-copilot-btn" id="topbarCopilotBtn" type="button" title="Open AI Copilot (Powered by Google Gemini)">
+              <span class="copilot-spark">⚡</span>
+              <span>AI Copilot</span>
+              <span class="ai-badge">Gemini</span>
+            </button>
             <button class="icon-button notification-button" aria-label="Notifications"><svg><use href="#i-bell"/></svg><i></i></button>
             <button class="top-avatar" aria-label="Account">AM</button>
           </div>
@@ -103,6 +108,53 @@
         <div id="modalContent"></div>
       </section>
     </div>
+    <!-- High-Tech AI SEO Copilot (Powered by Google Gemini) -->
+    <div id="aiCopilotWidget" class="ai-copilot-widget">
+      <button id="aiCopilotToggle" class="ai-copilot-launcher" type="button" aria-label="Open AI SEO Copilot" title="RankForge AI Copilot (Powered by Google Gemini)">
+        <span class="copilot-glow"></span>
+        <span class="copilot-icon">⚡</span>
+        <span class="copilot-label">AI Copilot</span>
+        <span class="copilot-badge">Gemini</span>
+      </button>
+
+      <div id="aiCopilotPanel" class="ai-copilot-panel" hidden>
+        <header class="copilot-header">
+          <div class="copilot-header-brand">
+            <div class="copilot-avatar">⚡</div>
+            <div class="copilot-titles">
+              <strong>RankForge Copilot</strong>
+              <small><i class="pulse-dot"></i> Gemini 1.5 Flash Active</small>
+            </div>
+          </div>
+          <div class="copilot-header-controls">
+            <button id="copilotClear" class="copilot-control-btn" type="button" title="Clear chat history">↺</button>
+            <button id="copilotClose" class="copilot-control-btn" type="button" title="Close Copilot">✕</button>
+          </div>
+        </header>
+
+        <div class="copilot-context-bar" id="copilotContextBar">
+          <span class="context-pill" id="copilotVerticalPill">Vertical: Precision Machining</span>
+          <span class="context-pill" id="copilotViewPill">Overview</span>
+        </div>
+
+        <div class="copilot-messages" id="copilotMessages"></div>
+
+        <div class="copilot-chips" id="copilotChips">
+          <button class="copilot-chip" type="button" data-prompt="Suggest 5 high-intent B2B topic clusters for my vertical">🎯 5 Topic Clusters</button>
+          <button class="copilot-chip" type="button" data-prompt="Audit my current draft for Google E-E-A-T and technical depth">🔍 Audit Current Draft</button>
+          <button class="copilot-chip" type="button" data-prompt="Generate an engineering FAQ schema (JSON-LD) for this topic">🛡️ FAQ Schema</button>
+          <button class="copilot-chip" type="button" data-prompt="What B2B search intent keywords rank best for industrial buyers?">📈 B2B Keywords</button>
+        </div>
+
+        <form class="copilot-input-area" id="copilotForm">
+          <input type="text" id="copilotInput" placeholder="Ask Gemini Copilot anything about industrial SEO..." autocomplete="off" />
+          <button type="submit" id="copilotSendBtn" aria-label="Send prompt">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="m2 21 21-9L2 3v7l15 2-15 2v7Z"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+
     <div class="toast-region" id="toastRegion" aria-live="polite"></div>
     <script src="app.js"></script>
   </body>

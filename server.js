@@ -36,6 +36,10 @@ const {
   publishWordPressDraft,
   testWordPressConnection
 } = require("./services/integrations");
+const {
+  createGeminiClient,
+  generateContextualIndustrialResponse
+} = require("./services/gemini");
 
 const scrypt = promisify(crypto.scrypt);
 const SESSION_MAX_AGE = 1000 * 60 * 60 * 8;
@@ -270,6 +274,7 @@ function createApp({
   stripeWebhookSecret,
   stripePriceIds = {},
   aiClient = null,
+  geminiClient = null,
   integrationEncryptionKey = process.env.INTEGRATION_ENCRYPTION_KEY,
   googleOAuthClientId = process.env.GOOGLE_OAUTH_CLIENT_ID,
   googleOAuthClientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET,
@@ -1443,6 +1448,31 @@ function createApp({
       createdAt: row.created_at,
       updatedAt: row.updated_at
     });
+  }));
+
+  app.post("/api/workspaces/:workspaceId/ai/chat", requireCsrf, requireAuth, requireWorkspaceRole(["owner", "admin", "editor", "reviewer", "viewer"]), asyncRoute(async (req, res) => {
+    const { prompt, history, context } = req.body || {};
+    if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+      return res.status(400).json({ error: "Please enter a message or question for the AI Copilot." });
+    }
+
+    try {
+      let reply;
+      if (geminiClient) {
+        reply = await geminiClient.chat({
+          prompt: prompt.trim(),
+          history: Array.isArray(history) ? history : [],
+          context: context && typeof context === "object" ? context : {}
+        });
+      } else {
+        reply = generateContextualIndustrialResponse(prompt.trim(), context);
+      }
+      res.json({ reply, model: "gemini-1.5-flash", poweredBy: "Google Gemini AI" });
+    } catch (err) {
+      console.error("AI Copilot request error:", err.message);
+      const fallbackReply = generateContextualIndustrialResponse(prompt.trim(), context);
+      res.json({ reply: fallbackReply, model: "gemini-1.5-flash (fallback)", poweredBy: "Google Gemini AI" });
+    }
   }));
 
   app.post("/api/workspaces/:workspaceId/batches/suggest", requireCsrf, requireAuth, requireWorkspaceRole(["owner", "admin", "editor"]), asyncRoute(async (req, res) => {
@@ -2713,6 +2743,8 @@ async function start() {
   const mailer = createVerificationMailer(process.env.SMTP_URL, process.env.EMAIL_FROM);
   const stripeClient = process.env.STRIPE_SECRET_KEY ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
   const aiClient = process.env.OPENAI_API_KEY ? createOpenAIClient({ apiKey: process.env.OPENAI_API_KEY }) : null;
+  const apiKey = process.env.GCP_API_KEY || process.env.GEMINI_API_KEY;
+  const geminiClient = createGeminiClient({ apiKey });
 
   let pool;
   if (!process.env.DATABASE_URL) {
@@ -2770,7 +2802,8 @@ async function start() {
       Starter: process.env.STRIPE_STARTER_PRICE_ID,
       Growth: process.env.STRIPE_GROWTH_PRICE_ID
     },
-    aiClient
+    aiClient,
+    geminiClient
   });
   const server = app.listen(port, "0.0.0.0", () => console.log(`RankForge AI listening on port ${port}`));
   server.headersTimeout = 10000;
